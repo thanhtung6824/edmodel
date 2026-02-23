@@ -1,0 +1,14 @@
+Metadata-Version: 2.4
+Name: edmodel
+Version: 0.1.0
+Summary: AI model to predict the market
+Requires-Python: >=3.11
+Requires-Dist: torch>=2.10.0
+Requires-Dist: torchvision>=0.25.0
+Requires-Dist: ta>=0.11.0
+Requires-Dist: pandas>=3.0.1
+Requires-Dist: scikit-learn>=1.8.0
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0; extra == "dev"
+Requires-Dist: pytest-asyncio>=0.23; extra == "dev"
+Requires-Dist: ruff>=0.4; extra == "dev"
