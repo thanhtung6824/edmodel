@@ -26,8 +26,8 @@ def load_data_set():
     train_scaled = scaler.fit_transform(train_raw)
     test_scaled = scaler.transform(test_raw)
 
-    train_set = BTCDataset(train_scaled, window=60)
-    test_set = BTCDataset(test_scaled, window=60)
+    train_set = BTCDataset(train_scaled, train_raw, window=60)
+    test_set = BTCDataset(test_scaled, train_raw, window=60)
 
     labels = [train_set[i][1].item() for i in range(len(train_set))]
     dist = Counter(labels)

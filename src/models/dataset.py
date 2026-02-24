@@ -2,8 +2,9 @@ import torch
 from torch.utils.data import Dataset
 
 class BTCDataset(Dataset):
-    def __init__(self, data, window=60, lookahead=6, threshold=0.005):
-        self.data = data
+    def __init__(self, scaled_data, raw_data, window=60, lookahead=6, threshold=0.005):
+        self.data = scaled_data
+        self.raw_data = raw_data
         self.window = window
         self.lookahead = lookahead    # 6 candles 4h = 24h
         self.threshold = threshold
@@ -14,8 +15,8 @@ class BTCDataset(Dataset):
     def __getitem__(self, idx):
         x = self.data[idx : idx + self.window]
 
-        current_close = self.data[idx + self.window - 1, 3]
-        future_closes = self.data[idx + self.window : idx + self.window + self.lookahead, 3]
+        current_close = self.raw_data[idx + self.window - 1, 3]
+        future_closes = self.raw_data[idx + self.window : idx + self.window + self.lookahead, 3]
 
         future_max = future_closes.max()
         future_min = future_closes.min()
