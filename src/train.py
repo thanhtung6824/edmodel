@@ -27,8 +27,8 @@ def load_data_set():
     train_set = BTCDataset(train_scaled, window=60)
     test_set = BTCDataset(test_scaled, window=60)
 
-    train_loader = DataLoader(train_set, batch_size=32, shuffle=True)
-    test_loader = DataLoader(test_set, batch_size=32, shuffle=False)
+    train_loader = DataLoader(train_set, batch_size=32, shuffle=True, num_workers=4, pin_memory=True)
+    test_loader = DataLoader(test_set, batch_size=32, shuffle=False, num_workers=4, pin_memory=True)
 
     return train_loader, test_loader
 
@@ -43,6 +43,7 @@ def train():
 
     epochs = 100
     for epoch in range(epochs):
+        print(f"Epoch {epoch + 1}/{epochs}")
         model.train()
         train_loss = 0
 
