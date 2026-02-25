@@ -1,0 +1,67 @@
+// This Pine Script™ is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// SFP Signal Server — Live Signal Display
+// Update inputs when dashboard shows new signals at http://62.146.233.214:8000
+
+//@version=6
+indicator("SFP Signals", overlay=true, max_lines_count=50, max_labels_count=50)
+
+// ─── 15m Signal ───
+g_15m     = "15m Signal"
+en_15m    = input.bool(false, "Active", group=g_15m)
+dir_15m   = input.string("LONG", "Direction", options=["LONG", "SHORT"], group=g_15m)
+entry_15m = input.float(0.0, "Entry", group=g_15m)
+tp_15m    = input.float(0.0, "TP %", group=g_15m, step=0.01)
+sl_15m    = input.float(0.0, "SL %", group=g_15m, step=0.01)
+
+// ─── 1h Signal ───
+g_1h     = "1h Signal"
+en_1h    = input.bool(false, "Active", group=g_1h)
+dir_1h   = input.string("LONG", "Direction", options=["LONG", "SHORT"], group=g_1h)
+entry_1h = input.float(0.0, "Entry", group=g_1h)
+tp_1h    = input.float(0.0, "TP %", group=g_1h, step=0.01)
+sl_1h    = input.float(0.0, "SL %", group=g_1h, step=0.01)
+
+// ─── 4h Signal ───
+g_4h     = "4h Signal"
+en_4h    = input.bool(false, "Active", group=g_4h)
+dir_4h   = input.string("LONG", "Direction", options=["LONG", "SHORT"], group=g_4h)
+entry_4h = input.float(0.0, "Entry", group=g_4h)
+tp_4h    = input.float(0.0, "TP %", group=g_4h, step=0.01)
+sl_4h    = input.float(0.0, "SL %", group=g_4h, step=0.01)
+
+// ─── Display Settings ───
+g_style = "Style"
+col_long  = input.color(color.new(#089981, 0), "Long color", group=g_style)
+col_short = input.color(color.new(#f23645, 0), "Short color", group=g_style)
+col_entry = input.color(color.new(#2962ff, 0), "Entry color", group=g_style)
+
+// ─── Draw function ───
+draw_signal(bool en, string dir, float entry, float tp_pct, float sl_pct, string tf_label) =>
+    if en and entry > 0 and barstate.islast
+        is_long = dir == "LONG"
+        tp_price = is_long ? entry * (1 + tp_pct / 100) : entry * (1 - tp_pct / 100)
+        sl_price = is_long ? entry * (1 - sl_pct / 100) : entry * (1 + sl_pct / 100)
+        dir_col = is_long ? col_long : col_short
+
+        // Entry line
+        entry_line = line.new(bar_index - 20, entry, bar_index + 20, entry, color=col_entry, style=line.style_solid, width=2)
+        line.delete(entry_line[1])
+        entry_lbl = label.new(bar_index + 22, entry, tf_label + " " + dir + "\n" + str.tostring(entry, format.mintick), style=label.style_label_left, color=col_entry, textcolor=color.white, size=size.small)
+        label.delete(entry_lbl[1])
+
+        // TP line
+        tp_line = line.new(bar_index - 20, tp_price, bar_index + 20, tp_price, color=col_long, style=line.style_dashed, width=1)
+        line.delete(tp_line[1])
+        tp_lbl = label.new(bar_index + 22, tp_price, "TP +" + str.tostring(tp_pct, "#.##") + "%\n" + str.tostring(tp_price, format.mintick), style=label.style_label_left, color=col_long, textcolor=color.white, size=size.tiny)
+        label.delete(tp_lbl[1])
+
+        // SL line
+        sl_line = line.new(bar_index - 20, sl_price, bar_index + 20, sl_price, color=col_short, style=line.style_dashed, width=1)
+        line.delete(sl_line[1])
+        sl_lbl = label.new(bar_index + 22, sl_price, "SL -" + str.tostring(sl_pct, "#.##") + "%\n" + str.tostring(sl_price, format.mintick), style=label.style_label_left, color=col_short, textcolor=color.white, size=size.tiny)
+        label.delete(sl_lbl[1])
+
+// ─── Draw all active signals ───
+draw_signal(en_15m, dir_15m, entry_15m, tp_15m, sl_15m, "15m")
+draw_signal(en_1h, dir_1h, entry_1h, tp_1h, sl_1h, "1h")
+draw_signal(en_4h, dir_4h, entry_4h, tp_4h, sl_4h, "4h")

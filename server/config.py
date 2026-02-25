@@ -1,5 +1,7 @@
 """Server configuration constants."""
 
+import os
+
 SYMBOL = "BTCUSDT"
 N_CANDLES = 500
 WINDOW = 30
@@ -28,3 +30,7 @@ TIMEFRAMES = {
         "cron": {"hour": "0,4,8,12,16,20", "minute": "1"},
     },
 }
+
+# Telegram bot — set via environment variables
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
