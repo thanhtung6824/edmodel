@@ -7,7 +7,16 @@ N_CANDLES = 500
 WINDOW = 30
 RATIO_THRESHOLD = 1.4
 SIGNAL_EXPIRY_BARS = 3
+SIGNAL_HORIZON = 18  # bars to track outcome (matches backtest)
 MODEL_PATH = "best_model_transformer.pth"
+LIVE_SIGNALS_PATH = "signals_live.json"
+
+# Past signal files (from backtest validation)
+HISTORY_FILES = {
+    "15m": "signals_15min.json",
+    "1h": "signals_1h.json",
+    "4h": "signals_4h.json",
+}
 
 # Timeframe configs: (binance interval, tf_hours, cron kwargs for APScheduler)
 TIMEFRAMES = {
