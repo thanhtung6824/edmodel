@@ -12,7 +12,11 @@ dependencies = [
     "torchvision>=0.25.0",
     "ta>=0.11.0",
     "pandas>=3.0.1",
-    "scikit-learn>=1.8.0"
+    "scikit-learn>=1.8.0",
+    "fastapi>=0.104",
+    "uvicorn>=0.24",
+    "httpx>=0.25",
+    "apscheduler>=3.10",
 ]
 
 [project.optional-dependencies]
@@ -23,7 +27,7 @@ dev = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["src*"]
+include = ["src*", "server*"]
 
 [tool.ruff]
 target-version = "py311"
