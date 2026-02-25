@@ -80,7 +80,7 @@ def load_data_set():
     sl_labels = sl_labels[drop_n:]
 
     # Clean up
-    feat = feat.replace([float('inf'), float('-inf')], 0.0).fillna(0.0)
+    feat = feat.replace([float("inf"), float("-inf")], 0.0).fillna(0.0)
 
     # Clip outliers
     feat["vol_rel_20"] = feat["vol_rel_20"].clip(0, 5.0)
@@ -103,16 +103,22 @@ def load_data_set():
     print(f"  Total bars: {len(actions)}")
     print(f"  SFP signals: {total_sfp} ({total_sfp / len(actions) * 100:.1f}%)")
     print(f"  Long: {n_long}, Short: {n_short}")
-    print(f"  Profitable: {n_profitable} ({n_profitable / max(total_sfp, 1) * 100:.0f}%), "
-          f"Losing: {n_losing} ({n_losing / max(total_sfp, 1) * 100:.0f}%)")
+    print(
+        f"  Profitable: {n_profitable} ({n_profitable / max(total_sfp, 1) * 100:.0f}%), "
+        f"Losing: {n_losing} ({n_losing / max(total_sfp, 1) * 100:.0f}%)"
+    )
     if n_profitable > 0:
         prof_mask = sfp_mask & (quality == 1)
-        print(f"  Profitable — Avg TP: {tp_labels[prof_mask].mean() * 100:.2f}%, "
-              f"Avg SL: {sl_labels[prof_mask].mean() * 100:.2f}%")
+        print(
+            f"  Profitable — Avg TP: {tp_labels[prof_mask].mean() * 100:.2f}%, "
+            f"Avg SL: {sl_labels[prof_mask].mean() * 100:.2f}%"
+        )
     if n_losing > 0:
         lose_mask = sfp_mask & (quality == 0)
-        print(f"  Losing     — Avg TP: {tp_labels[lose_mask].mean() * 100:.2f}%, "
-              f"Avg SL: {sl_labels[lose_mask].mean() * 100:.2f}%")
+        print(
+            f"  Losing     — Avg TP: {tp_labels[lose_mask].mean() * 100:.2f}%, "
+            f"Avg SL: {sl_labels[lose_mask].mean() * 100:.2f}%"
+        )
 
     # --- Train/test split (time-based) ---
     split_idx = int(len(feat_values) * 0.8)
@@ -134,12 +140,16 @@ def load_data_set():
 
     # --- Create datasets (SFP-only) ---
     window = 30
-    train_set = SFPDataset(train_scaled, train_actions, train_quality, train_tp, train_sl, window=window)
+    train_set = SFPDataset(
+        train_scaled, train_actions, train_quality, train_tp, train_sl, window=window
+    )
     test_set = SFPDataset(test_scaled, test_actions, test_quality, test_tp, test_sl, window=window)
 
     print(f"\nTrain SFPs: {len(train_set)}, Test SFPs: {len(test_set)}")
     train_q = train_quality[train_actions != 0]
-    print(f"Train quality: {int(np.sum(train_q == 1))} profitable, {int(np.sum(train_q == 0))} losing")
+    print(
+        f"Train quality: {int(np.sum(train_q == 1))} profitable, {int(np.sum(train_q == 0))} losing"
+    )
 
     train_loader = DataLoader(train_set, batch_size=64, shuffle=True)
     test_loader = DataLoader(test_set, batch_size=64, shuffle=False)
@@ -161,8 +171,8 @@ def compute_metrics(quality_preds, quality_targets, tp_preds, sl_preds, tp_targe
     correct = (quality_preds == quality_targets).sum().item()
     accuracy = correct / total * 100 if total > 0 else 0
 
-    pred_pos = (quality_preds == 1)
-    true_pos = (quality_targets == 1)
+    pred_pos = quality_preds == 1
+    true_pos = quality_targets == 1
     tp_cls = (pred_pos & true_pos).sum().item()
     precision = tp_cls / pred_pos.sum().item() * 100 if pred_pos.sum() > 0 else 0
     recall = tp_cls / true_pos.sum().item() * 100 if true_pos.sum() > 0 else 0
@@ -249,7 +259,9 @@ def train():
         tp_targets = torch.cat(all_tp_targets)
         sl_targets = torch.cat(all_sl_targets)
 
-        metrics = compute_metrics(quality_preds, quality_targets, tp_preds, sl_preds, tp_targets, sl_targets)
+        metrics = compute_metrics(
+            quality_preds, quality_targets, tp_preds, sl_preds, tp_targets, sl_targets
+        )
         scheduler.step()
 
         avg_train_loss = train_loss / len(train_loader)

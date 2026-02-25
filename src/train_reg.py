@@ -1,4 +1,5 @@
 """Regression-only SFP training: predict TP/SL, use ratio as quality filter."""
+
 import numpy as np
 import pandas as pd
 import torch
@@ -19,8 +20,7 @@ class SFPRegModel(nn.Module):
     def __init__(self, n_features=14, hidden_size=64, noise_std=0.05):
         super().__init__()
         self.noise_std = noise_std
-        self.lstm = nn.LSTM(n_features, hidden_size, num_layers=2,
-                            batch_first=True, dropout=0.2)
+        self.lstm = nn.LSTM(n_features, hidden_size, num_layers=2, batch_first=True, dropout=0.2)
         self.layer_norm = nn.LayerNorm(hidden_size)
         self.attn_weight = nn.Linear(hidden_size, 1, bias=False)
         self.dropout = nn.Dropout(0.3)
@@ -120,7 +120,7 @@ def load_data_set():
     tp_labels = tp_labels[drop_n:]
     sl_labels = sl_labels[drop_n:]
 
-    feat = feat.replace([float('inf'), float('-inf')], 0.0).fillna(0.0)
+    feat = feat.replace([float("inf"), float("-inf")], 0.0).fillna(0.0)
     feat["vol_rel_20"] = feat["vol_rel_20"].clip(0, 5.0)
     for n in [5, 10]:
         feat[f"sweep_below_{n}"] = feat[f"sweep_below_{n}"].clip(0, 0.05)
@@ -135,7 +135,9 @@ def load_data_set():
     total_sfp = int(np.sum(sfp_mask))
     n_profitable = int(np.sum(quality[sfp_mask] == 1))
     n_losing = total_sfp - n_profitable
-    print(f"\nSFP signals: {total_sfp} | Profitable: {n_profitable} ({n_profitable/total_sfp*100:.0f}%) | Losing: {n_losing}")
+    print(
+        f"\nSFP signals: {total_sfp} | Profitable: {n_profitable} ({n_profitable / total_sfp * 100:.0f}%) | Losing: {n_losing}"
+    )
 
     # --- Train/test split ---
     split_idx = int(len(feat_values) * 0.8)
@@ -147,10 +149,22 @@ def load_data_set():
     test_scaled = scaler.transform(test_feat)
 
     window = 30
-    train_set = SFPDataset(train_scaled, actions[:split_idx], quality[:split_idx],
-                           tp_labels[:split_idx], sl_labels[:split_idx], window=window)
-    test_set = SFPDataset(test_scaled, actions[split_idx:], quality[split_idx:],
-                          tp_labels[split_idx:], sl_labels[split_idx:], window=window)
+    train_set = SFPDataset(
+        train_scaled,
+        actions[:split_idx],
+        quality[:split_idx],
+        tp_labels[:split_idx],
+        sl_labels[:split_idx],
+        window=window,
+    )
+    test_set = SFPDataset(
+        test_scaled,
+        actions[split_idx:],
+        quality[split_idx:],
+        tp_labels[split_idx:],
+        sl_labels[split_idx:],
+        window=window,
+    )
 
     print(f"Train SFPs: {len(train_set)}, Test SFPs: {len(test_set)}")
 
@@ -219,7 +233,7 @@ def train():
     optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, weight_decay=1e-3)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=100)
 
-    best_loss = float('inf')
+    best_loss = float("inf")
     counter = 0
     epochs = 100
 
@@ -261,9 +275,11 @@ def train():
         if (epoch + 1) % 10 == 0:
             print("  --- Ratio threshold analysis ---")
             for thresh, (n, prec, rec, avg_tp, avg_sl) in sorted(ratio_results.items()):
-                print(f"    TP/SL > {thresh}: {n} trades | "
-                      f"Prec: {prec:.0f}% | Recall: {rec:.0f}% | "
-                      f"Avg TP: {avg_tp:.2f}% | Avg SL: {avg_sl:.2f}%")
+                print(
+                    f"    TP/SL > {thresh}: {n} trades | "
+                    f"Prec: {prec:.0f}% | Recall: {rec:.0f}% | "
+                    f"Avg TP: {avg_tp:.2f}% | Avg SL: {avg_sl:.2f}%"
+                )
 
         # --- Early stopping on test loss ---
         if test_loss < best_loss:
@@ -280,13 +296,15 @@ def train():
     # --- Final evaluation with best model ---
     model.load_state_dict(torch.load("best_model_reg.pth", weights_only=True))
     _, tp_mae, sl_mae, ratio_results = evaluate(model, test_loader, criterion)
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"Best model — TP MAE: {tp_mae:.2f}%, SL MAE: {sl_mae:.2f}%")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     for thresh, (n, prec, rec, avg_tp, avg_sl) in sorted(ratio_results.items()):
-        print(f"  TP/SL > {thresh}: {n} trades | "
-              f"Prec: {prec:.0f}% | Recall: {rec:.0f}% | "
-              f"Avg TP: {avg_tp:.2f}% | Avg SL: {avg_sl:.2f}%")
+        print(
+            f"  TP/SL > {thresh}: {n} trades | "
+            f"Prec: {prec:.0f}% | Recall: {rec:.0f}% | "
+            f"Avg TP: {avg_tp:.2f}% | Avg SL: {avg_sl:.2f}%"
+        )
 
 
 train()

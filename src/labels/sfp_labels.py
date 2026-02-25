@@ -29,13 +29,17 @@ def build_swing_level_series(highs, lows, swing_highs, swing_lows, n, max_age=15
     A swing at index j is only confirmed at j+n (no look-ahead bias).
     max_age ignores stale levels older than max_age bars.
 
-    Returns (active_sh, active_sl) arrays of lists:
+    Returns (active_sh, active_sl, active_sh_ages, active_sl_ages):
         active_sh[i] = [level1, level2, ...] all active swing highs at bar i
         active_sl[i] = [level1, level2, ...] all active swing lows at bar i
+        active_sh_ages[i] = [age1, age2, ...] age in bars for each swing high
+        active_sl_ages[i] = [age1, age2, ...] age in bars for each swing low
     """
     length = len(highs)
     active_sh = [[] for _ in range(length)]
     active_sl = [[] for _ in range(length)]
+    active_sh_ages = [[] for _ in range(length)]
+    active_sl_ages = [[] for _ in range(length)]
 
     for i in range(length):
         # Collect all confirmed swing highs within max_age
@@ -44,6 +48,7 @@ def build_swing_level_series(highs, lows, swing_highs, swing_lows, n, max_age=15
                 break
             if swing_highs[j]:
                 active_sh[i].append(highs[j])
+                active_sh_ages[i].append(i - j)
 
         # Collect all confirmed swing lows within max_age
         for j in range(i - n, -1, -1):
@@ -51,14 +56,54 @@ def build_swing_level_series(highs, lows, swing_highs, swing_lows, n, max_age=15
                 break
             if swing_lows[j]:
                 active_sl[i].append(lows[j])
+                active_sl_ages[i].append(i - j)
 
-    return active_sh, active_sl
+    return active_sh, active_sl, active_sh_ages, active_sl_ages
 
 
-def detect_sfp(df_high, df_low, df_close, df_open,
-               active_sh, active_sl,
-               min_sweep_pct=0.003, max_sweep_pct=0.02,
-               reclaim_window=1):
+def compute_swing_level_info(closes, active_sh, active_sl, active_sh_ages, active_sl_ages, max_age=150):
+    """Compute per-bar swing level context features.
+
+    Returns:
+        nearest_age: age of nearest swing level, normalized by max_age
+        confluence: count of levels within 1% of nearest, capped at 5, divided by 5
+    """
+    length = len(closes)
+    nearest_age = np.zeros(length, dtype=np.float32)
+    confluence = np.zeros(length, dtype=np.float32)
+
+    for i in range(length):
+        all_levels = list(active_sh[i]) + list(active_sl[i])
+        all_ages = list(active_sh_ages[i]) + list(active_sl_ages[i])
+        if not all_levels:
+            continue
+
+        # Find nearest level to current close
+        distances = [abs(lvl - closes[i]) / (closes[i] + 1e-8) for lvl in all_levels]
+        nearest_idx = np.argmin(distances)
+        nearest_price = all_levels[nearest_idx]
+
+        # Age of nearest level
+        nearest_age[i] = min(all_ages[nearest_idx], max_age) / max_age
+
+        # Confluence: count levels within 1% of nearest
+        n_nearby = sum(1 for lvl in all_levels if abs(lvl - nearest_price) / (nearest_price + 1e-8) < 0.01)
+        confluence[i] = min(n_nearby, 5) / 5.0
+
+    return nearest_age, confluence
+
+
+def detect_sfp(
+    df_high,
+    df_low,
+    df_close,
+    df_open,
+    active_sh,
+    active_sl,
+    min_sweep_pct=0.003,
+    max_sweep_pct=0.02,
+    reclaim_window=1,
+):
     """Detect Swing Failure Patterns (liquidity sweeps) with multi-candle reclaim.
 
     Checks sweeps against ALL active swing levels (not just most recent).
@@ -71,10 +116,13 @@ def detect_sfp(df_high, df_low, df_close, df_open,
     Bearish SFP: candle sweeps High > swing_high, open < swing_high,
                  then reclaim Close < swing_high
 
-    Returns actions array: 0=no-trade, 1=long, 2=short.
+    Returns (actions, swept_levels):
+        actions: 0=no-trade, 1=long, 2=short
+        swept_levels: the swing level price that triggered the SFP (used as entry)
     """
     length = len(df_high)
     actions = np.zeros(length, dtype=np.int64)
+    swept_levels = np.zeros(length, dtype=np.float64)
 
     for i in range(length):
         # Check bullish SFP: sweep below any active swing low
@@ -91,6 +139,7 @@ def detect_sfp(df_high, df_low, df_close, df_open,
             for k in range(i, min(i + reclaim_window + 1, length)):
                 if df_close[k] > sl and actions[k] == 0:
                     actions[k] = 1  # long on reclaim candle
+                    swept_levels[k] = sl
                     break
             break  # only trigger on first matching level
 
@@ -109,16 +158,21 @@ def detect_sfp(df_high, df_low, df_close, df_open,
                 if df_close[k] < sh:
                     if actions[k] == 1:
                         actions[k] = 0  # conflict → no trade
+                        swept_levels[k] = 0  # clear conflicted level
                     elif actions[k] == 0:
                         actions[k] = 2  # short on reclaim candle
+                        swept_levels[k] = sh
                     break
             break  # only trigger on first matching level
 
-    return actions
+    return actions, swept_levels
 
 
-def compute_tp_sl_labels(df_high, df_low, df_close, actions, horizon=18):
+def compute_tp_sl_labels(df_high, df_low, df_close, actions, swept_levels, horizon=18):
     """Compute TP/SL and quality labels for all SFP bars.
+
+    Entry = swept swing level (not close), giving better R:R since entry
+    is closer to the invalidation point.
 
     For longs: TP = (max future High - entry) / entry
                SL = (entry - min future Low) / entry
@@ -140,7 +194,11 @@ def compute_tp_sl_labels(df_high, df_low, df_close, actions, horizon=18):
             actions[i] = 0
             continue
 
-        entry = df_close[i]
+        entry = swept_levels[i]
+        if entry <= 0:
+            actions[i] = 0
+            continue
+
         future_highs = df_high[i + 1 : i + 1 + horizon]
         future_lows = df_low[i + 1 : i + 1 + horizon]
         max_high = np.max(future_highs)
@@ -179,16 +237,23 @@ def generate_labels(df_high, df_low, df_close, df_open):
     results = {}
     for n in [5, 10]:
         sh, sl = detect_swings(highs, lows, n)
-        active_sh, active_sl = build_swing_level_series(highs, lows, sh, sl, n, max_age=150)
-        actions = detect_sfp(df_high, df_low, df_close, df_open,
-                             active_sh, active_sl,
-                             reclaim_window=reclaim_windows[n])
-        results[n] = actions
+        active_sh, active_sl, _, _ = build_swing_level_series(highs, lows, sh, sl, n, max_age=150)
+        actions, swept = detect_sfp(
+            df_high,
+            df_low,
+            df_close,
+            df_open,
+            active_sh,
+            active_sl,
+            reclaim_window=reclaim_windows[n],
+        )
+        results[n] = (actions, swept)
 
     # Merge: agreement keeps, conflict → no-trade
-    actions_5 = results[5]
-    actions_10 = results[10]
+    actions_5, swept_5 = results[5]
+    actions_10, swept_10 = results[10]
     merged = np.zeros(len(highs), dtype=np.int64)
+    merged_swept = np.zeros(len(highs), dtype=np.float64)
 
     for i in range(len(highs)):
         a5 = actions_5[i]
@@ -196,15 +261,18 @@ def generate_labels(df_high, df_low, df_close, df_open):
 
         if a5 == a10:
             merged[i] = a5
+            merged_swept[i] = swept_5[i] if swept_5[i] > 0 else swept_10[i]
         elif a5 != 0 and a10 == 0:
             merged[i] = a5
+            merged_swept[i] = swept_5[i]
         elif a10 != 0 and a5 == 0:
             merged[i] = a10
+            merged_swept[i] = swept_10[i]
         else:
             merged[i] = 0  # conflict
 
     total_sfp = int(np.sum(merged != 0))
-    quality, tp_labels, sl_labels = compute_tp_sl_labels(df_high, df_low, df_close, merged)
+    quality, tp_labels, sl_labels = compute_tp_sl_labels(df_high, df_low, df_close, merged, merged_swept)
     n_profitable = int(np.sum((merged != 0) & (quality == 1)))
     n_losing = total_sfp - n_profitable
     print(f"  SFP funnel: {total_sfp} detected → {n_profitable} profitable, {n_losing} losing")

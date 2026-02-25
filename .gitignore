@@ -1,2 +1,8 @@
 btcusd_1-min_data.csv
 data/btc_data.csv
+data/btc_*.csv
+__pycache__/
+best_model.pth
+best_model_reg.pth
+signals_*.json
+signals_*.pine
