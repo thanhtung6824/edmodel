@@ -272,17 +272,11 @@ const chart = LightweightCharts.createChart(container, {
   timeScale: { borderColor: '#21262d', timeVisible: true, secondsVisible: false },
 });
 
-const candleSeries = chart.addSeries(LightweightCharts.CandlestickSeries, {
+const candleSeries = chart.addCandlestickSeries({
   upColor: '#3fb950', downColor: '#f85149',
   borderUpColor: '#3fb950', borderDownColor: '#f85149',
   wickUpColor: '#3fb950', wickDownColor: '#f85149',
 });
-
-const volumeSeries = chart.addSeries(LightweightCharts.HistogramSeries, {
-  priceFormat: { type: 'volume' },
-  priceScaleId: 'vol',
-});
-chart.priceScale('vol').applyOptions({ scaleMargins: { top: 0.85, bottom: 0 } });
 
 // Signal lines stored here for cleanup
 let signalLines = [];
@@ -339,7 +333,6 @@ async function loadCandles(tf) {
     const data = await res.json();
     if (data.candles && data.candles.length > 0) {
       candleSeries.setData(data.candles);
-      volumeSeries.setData([]); // volume not stored yet, clear
       chart.timeScale().fitContent();
       drawSignalLines(cachedSignals, tf);
     }
