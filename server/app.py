@@ -480,34 +480,36 @@ function drawActiveSignalLines(sigs, tf) {
 function buildMarkers(tf) {
   const markers = [];
   const showHist = document.getElementById('showHistory').checked;
+  // Only show markers within candle range
+  const candles = candleSeries.data ? candleSeries.data() : [];
+  const minTime = candles.length > 0 ? candles[0].time : 0;
 
   // Past backtest signals
   if (showHist && cachedHistory[tf]) {
     cachedHistory[tf].forEach(s => {
+      const t = Math.floor(s.time_ms / 1000);
+      if (t < minTime) return;
       const isLong = s.dir === 1;
-      const won = s.result === 1;
       markers.push({
-        time: Math.floor(s.time_ms / 1000),
+        time: t,
         position: isLong ? 'belowBar' : 'aboveBar',
-        color: won ? '#3fb950' : '#f85149',
+        color: isLong ? '#3fb950' : '#f85149',
         shape: isLong ? 'arrowUp' : 'arrowDown',
-        text: (isLong ? 'L' : 'S') + ' ' + (won ? 'W' : 'X'),
+        text: isLong ? 'L' : 'S',
       });
     });
   }
 
   // Live signals
   cachedLive.forEach(s => {
-    if (s.timeframe !== tf || !s.time) return;
+    if (s.timeframe !== tf || !s.time || s.time < minTime) return;
     const isLong = s.direction === 'LONG';
-    const color = s.status === 'win' ? '#3fb950' : s.status === 'loss' ? '#f85149' : '#58a6ff';
-    const label = (isLong ? 'L' : 'S') + (s.status === 'open' ? '' : s.status === 'win' ? ' W' : ' X');
     markers.push({
       time: s.time,
       position: isLong ? 'belowBar' : 'aboveBar',
-      color: color,
+      color: isLong ? '#3fb950' : '#f85149',
       shape: isLong ? 'arrowUp' : 'arrowDown',
-      text: label,
+      text: isLong ? 'L' : 'S',
     });
   });
 
