@@ -4,5 +4,4 @@ data/btc_*.csv
 __pycache__/
 best_model.pth
 best_model_reg.pth
-signals_*.json
 signals_*.pine

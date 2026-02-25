@@ -1,0 +1,2336 @@
+{
+  "timeframe": "15min",
+  "threshold": 1.4,
+  "signals": [
+    {
+      "time_ms": 1704437100000,
+      "timestamp": "2024-01-05 06:45:00",
+      "dir": 1,
+      "entry": 42768.0,
+      "tp_price": 44028.0,
+      "sl_price": 42725.23,
+      "ratio": 1.4624,
+      "result": 1
+    },
+    {
+      "time_ms": 1704483000000,
+      "timestamp": "2024-01-05 19:30:00",
+      "dir": 1,
+      "entry": 43256.0,
+      "tp_price": 43834.0,
+      "sl_price": 43139.0,
+      "ratio": 1.749,
+      "result": 1
+    },
+    {
+      "time_ms": 1704664800000,
+      "timestamp": "2024-01-07 22:00:00",
+      "dir": 1,
+      "entry": 43912.0,
+      "tp_price": 44290.0,
+      "sl_price": 43868.09,
+      "ratio": 1.45,
+      "result": 1
+    },
+    {
+      "time_ms": 1704823200000,
+      "timestamp": "2024-01-09 18:00:00",
+      "dir": 1,
+      "entry": 46281.0,
+      "tp_price": 47054.0,
+      "sl_price": 46234.72,
+      "ratio": 1.6076,
+      "result": 1
+    },
+    {
+      "time_ms": 1704852900000,
+      "timestamp": "2024-01-10 02:15:00",
+      "dir": 2,
+      "entry": 47021.0,
+      "tp_price": 45287.0,
+      "sl_price": 47068.02,
+      "ratio": 2.1579,
+      "result": 1
+    },
+    {
+      "time_ms": 1704905100000,
+      "timestamp": "2024-01-10 16:45:00",
+      "dir": 1,
+      "entry": 45350.0,
+      "tp_price": 45675.0,
+      "sl_price": 44304.0,
+      "ratio": 1.4839,
+      "result": 0
+    },
+    {
+      "time_ms": 1704909600000,
+      "timestamp": "2024-01-10 18:00:00",
+      "dir": 1,
+      "entry": 44903.0,
+      "tp_price": 46319.0,
+      "sl_price": 44801.0,
+      "ratio": 1.5647,
+      "result": 1
+    },
+    {
+      "time_ms": 1704934800000,
+      "timestamp": "2024-01-11 01:00:00",
+      "dir": 1,
+      "entry": 45350.0,
+      "tp_price": 47751.0,
+      "sl_price": 45101.0,
+      "ratio": 1.5255,
+      "result": 1
+    },
+    {
+      "time_ms": 1704946500000,
+      "timestamp": "2024-01-11 04:15:00",
+      "dir": 2,
+      "entry": 47021.0,
+      "tp_price": 46229.0,
+      "sl_price": 47068.02,
+      "ratio": 1.4151,
+      "result": 1
+    },
+    {
+      "time_ms": 1705280400000,
+      "timestamp": "2024-01-15 01:00:00",
+      "dir": 1,
+      "entry": 42502.0,
+      "tp_price": 42712.0,
+      "sl_price": 41680.0,
+      "ratio": 1.6187,
+      "result": 0
+    },
+    {
+      "time_ms": 1705345200000,
+      "timestamp": "2024-01-15 19:00:00",
+      "dir": 2,
+      "entry": 42800.0,
+      "tp_price": 42136.0,
+      "sl_price": 43321.0,
+      "ratio": 1.422,
+      "result": 0
+    },
+    {
+      "time_ms": 1705434300000,
+      "timestamp": "2024-01-16 19:45:00",
+      "dir": 1,
+      "entry": 42570.0,
+      "tp_price": 43398.0,
+      "sl_price": 42527.43,
+      "ratio": 1.6013,
+      "result": 1
+    },
+    {
+      "time_ms": 1705512600000,
+      "timestamp": "2024-01-17 17:30:00",
+      "dir": 1,
+      "entry": 42599.0,
+      "tp_price": 42897.0,
+      "sl_price": 42172.0,
+      "ratio": 1.4087,
+      "result": 0
+    },
+    {
+      "time_ms": 1705519800000,
+      "timestamp": "2024-01-17 19:30:00",
+      "dir": 1,
+      "entry": 42544.0,
+      "tp_price": 42897.0,
+      "sl_price": 42172.0,
+      "ratio": 1.573,
+      "result": 0
+    },
+    {
+      "time_ms": 1706732100000,
+      "timestamp": "2024-01-31 20:15:00",
+      "dir": 1,
+      "entry": 42856.0,
+      "tp_price": 43738.0,
+      "sl_price": 42813.14,
+      "ratio": 1.4409,
+      "result": 1
+    },
+    {
+      "time_ms": 1707233400000,
+      "timestamp": "2024-02-06 15:30:00",
+      "dir": 2,
+      "entry": 42901.0,
+      "tp_price": 42616.0,
+      "sl_price": 43050.0,
+      "ratio": 1.4127,
+      "result": 0
+    },
+    {
+      "time_ms": 1707335100000,
+      "timestamp": "2024-02-07 19:45:00",
+      "dir": 2,
+      "entry": 43165.0,
+      "tp_price": 42902.0,
+      "sl_price": 43674.0,
+      "ratio": 1.5424,
+      "result": 0
+    },
+    {
+      "time_ms": 1707738300000,
+      "timestamp": "2024-02-12 11:45:00",
+      "dir": 1,
+      "entry": 48047.0,
+      "tp_price": 48383.0,
+      "sl_price": 47720.0,
+      "ratio": 1.4522,
+      "result": 0
+    },
+    {
+      "time_ms": 1708027200000,
+      "timestamp": "2024-02-15 20:00:00",
+      "dir": 2,
+      "entry": 52528.0,
+      "tp_price": 51759.0,
+      "sl_price": 52580.53,
+      "ratio": 1.4996,
+      "result": 1
+    },
+    {
+      "time_ms": 1708455600000,
+      "timestamp": "2024-02-20 19:00:00",
+      "dir": 2,
+      "entry": 52465.0,
+      "tp_price": 50770.0,
+      "sl_price": 52517.47,
+      "ratio": 1.8055,
+      "result": 1
+    },
+    {
+      "time_ms": 1708717500000,
+      "timestamp": "2024-02-23 19:45:00",
+      "dir": 1,
+      "entry": 51105.0,
+      "tp_price": 51189.0,
+      "sl_price": 50610.0,
+      "ratio": 1.4981,
+      "result": 0
+    },
+    {
+      "time_ms": 1709055900000,
+      "timestamp": "2024-02-27 17:45:00",
+      "dir": 2,
+      "entry": 57055.0,
+      "tp_price": 56257.0,
+      "sl_price": 57357.0,
+      "ratio": 1.6182,
+      "result": 0
+    },
+    {
+      "time_ms": 1709531100000,
+      "timestamp": "2024-03-04 05:45:00",
+      "dir": 1,
+      "entry": 62615.0,
+      "tp_price": 63979.0,
+      "sl_price": 62552.39,
+      "ratio": 1.9623,
+      "result": 1
+    },
+    {
+      "time_ms": 1709668800000,
+      "timestamp": "2024-03-05 20:00:00",
+      "dir": 2,
+      "entry": 68550.0,
+      "tp_price": 61695.0,
+      "sl_price": 68618.55,
+      "ratio": 1.4386,
+      "result": 1
+    },
+    {
+      "time_ms": 1709747100000,
+      "timestamp": "2024-03-06 17:45:00",
+      "dir": 1,
+      "entry": 65531.0,
+      "tp_price": 67249.0,
+      "sl_price": 65267.0,
+      "ratio": 1.4186,
+      "result": 1
+    },
+    {
+      "time_ms": 1709839800000,
+      "timestamp": "2024-03-07 19:30:00",
+      "dir": 2,
+      "entry": 67547.0,
+      "tp_price": 66719.0,
+      "sl_price": 68061.0,
+      "ratio": 1.4294,
+      "result": 0
+    },
+    {
+      "time_ms": 1710135900000,
+      "timestamp": "2024-03-11 05:45:00",
+      "dir": 1,
+      "entry": 68112.0,
+      "tp_price": 68824.0,
+      "sl_price": 68043.89,
+      "ratio": 1.4431,
+      "result": 1
+    },
+    {
+      "time_ms": 1710261000000,
+      "timestamp": "2024-03-12 16:30:00",
+      "dir": 1,
+      "entry": 71928.0,
+      "tp_price": 73054.0,
+      "sl_price": 69606.0,
+      "ratio": 1.4063,
+      "result": 0
+    },
+    {
+      "time_ms": 1710266400000,
+      "timestamp": "2024-03-12 18:00:00",
+      "dir": 2,
+      "entry": 72087.0,
+      "tp_price": 68636.0,
+      "sl_price": 72269.0,
+      "ratio": 1.8414,
+      "result": 1
+    },
+    {
+      "time_ms": 1710270000000,
+      "timestamp": "2024-03-12 19:00:00",
+      "dir": 1,
+      "entry": 71500.0,
+      "tp_price": 72069.0,
+      "sl_price": 68636.0,
+      "ratio": 1.565,
+      "result": 0
+    },
+    {
+      "time_ms": 1710729900000,
+      "timestamp": "2024-03-18 02:45:00",
+      "dir": 2,
+      "entry": 68635.0,
+      "tp_price": 66775.0,
+      "sl_price": 68703.64,
+      "ratio": 1.5427,
+      "result": 1
+    },
+    {
+      "time_ms": 1711453500000,
+      "timestamp": "2024-03-26 11:45:00",
+      "dir": 2,
+      "entry": 70674.0,
+      "tp_price": 70319.0,
+      "sl_price": 71284.0,
+      "ratio": 1.6293,
+      "result": 0
+    },
+    {
+      "time_ms": 1711560600000,
+      "timestamp": "2024-03-27 17:30:00",
+      "dir": 2,
+      "entry": 71284.0,
+      "tp_price": 68388.0,
+      "sl_price": 71355.29,
+      "ratio": 1.8654,
+      "result": 1
+    },
+    {
+      "time_ms": 1711563300000,
+      "timestamp": "2024-03-27 18:15:00",
+      "dir": 1,
+      "entry": 69438.0,
+      "tp_price": 70167.0,
+      "sl_price": 68362.0,
+      "ratio": 1.4646,
+      "result": 0
+    },
+    {
+      "time_ms": 1713130200000,
+      "timestamp": "2024-04-14 21:30:00",
+      "dir": 1,
+      "entry": 63485.0,
+      "tp_price": 65395.0,
+      "sl_price": 63377.0,
+      "ratio": 1.4659,
+      "result": 1
+    },
+    {
+      "time_ms": 1713378600000,
+      "timestamp": "2024-04-17 18:30:00",
+      "dir": 1,
+      "entry": 61714.0,
+      "tp_price": 61963.0,
+      "sl_price": 59672.0,
+      "ratio": 1.42,
+      "result": 0
+    },
+    {
+      "time_ms": 1714156200000,
+      "timestamp": "2024-04-26 18:30:00",
+      "dir": 2,
+      "entry": 64262.0,
+      "tp_price": 63306.0,
+      "sl_price": 64326.27,
+      "ratio": 1.4943,
+      "result": 1
+    },
+    {
+      "time_ms": 1714800600000,
+      "timestamp": "2024-05-04 05:30:00",
+      "dir": 2,
+      "entry": 63340.0,
+      "tp_price": 62585.0,
+      "sl_price": 63444.0,
+      "ratio": 1.4168,
+      "result": 1
+    },
+    {
+      "time_ms": 1715704200000,
+      "timestamp": "2024-05-14 16:30:00",
+      "dir": 1,
+      "entry": 61500.0,
+      "tp_price": 62293.0,
+      "sl_price": 61108.0,
+      "ratio": 1.6185,
+      "result": 0
+    },
+    {
+      "time_ms": 1715710500000,
+      "timestamp": "2024-05-14 18:15:00",
+      "dir": 1,
+      "entry": 61500.0,
+      "tp_price": 62293.0,
+      "sl_price": 61138.0,
+      "ratio": 1.8349,
+      "result": 0
+    },
+    {
+      "time_ms": 1715877000000,
+      "timestamp": "2024-05-16 16:30:00",
+      "dir": 2,
+      "entry": 66455.0,
+      "tp_price": 65113.0,
+      "sl_price": 66521.46,
+      "ratio": 1.6911,
+      "result": 1
+    },
+    {
+      "time_ms": 1716202800000,
+      "timestamp": "2024-05-20 11:00:00",
+      "dir": 1,
+      "entry": 66583.0,
+      "tp_price": 67322.0,
+      "sl_price": 66516.41,
+      "ratio": 1.4232,
+      "result": 1
+    },
+    {
+      "time_ms": 1717630200000,
+      "timestamp": "2024-06-05 23:30:00",
+      "dir": 1,
+      "entry": 70387.0,
+      "tp_price": 71424.0,
+      "sl_price": 70316.62,
+      "ratio": 1.9105,
+      "result": 1
+    },
+    {
+      "time_ms": 1717777800000,
+      "timestamp": "2024-06-07 16:30:00",
+      "dir": 1,
+      "entry": 70995.0,
+      "tp_price": 71605.0,
+      "sl_price": 70619.0,
+      "ratio": 1.4288,
+      "result": 0
+    },
+    {
+      "time_ms": 1718296200000,
+      "timestamp": "2024-06-13 16:30:00",
+      "dir": 2,
+      "entry": 67964.0,
+      "tp_price": 66242.0,
+      "sl_price": 68257.0,
+      "ratio": 1.5856,
+      "result": 1
+    },
+    {
+      "time_ms": 1719342000000,
+      "timestamp": "2024-06-25 19:00:00",
+      "dir": 2,
+      "entry": 61513.0,
+      "tp_price": 61138.0,
+      "sl_price": 62395.0,
+      "ratio": 1.5128,
+      "result": 0
+    },
+    {
+      "time_ms": 1720501200000,
+      "timestamp": "2024-07-09 05:00:00",
+      "dir": 1,
+      "entry": 56578.0,
+      "tp_price": 57419.0,
+      "sl_price": 56369.0,
+      "ratio": 1.413,
+      "result": 0
+    },
+    {
+      "time_ms": 1720502100000,
+      "timestamp": "2024-07-09 05:15:00",
+      "dir": 2,
+      "entry": 56947.0,
+      "tp_price": 56369.0,
+      "sl_price": 57419.0,
+      "ratio": 1.4795,
+      "result": 0
+    },
+    {
+      "time_ms": 1720548900000,
+      "timestamp": "2024-07-09 18:15:00",
+      "dir": 2,
+      "entry": 57737.0,
+      "tp_price": 56927.0,
+      "sl_price": 58278.0,
+      "ratio": 1.4387,
+      "result": 0
+    },
+    {
+      "time_ms": 1721282400000,
+      "timestamp": "2024-07-18 06:00:00",
+      "dir": 2,
+      "entry": 64762.0,
+      "tp_price": 64259.0,
+      "sl_price": 64979.0,
+      "ratio": 1.5064,
+      "result": 0
+    },
+    {
+      "time_ms": 1721600100000,
+      "timestamp": "2024-07-21 22:15:00",
+      "dir": 1,
+      "entry": 66648.0,
+      "tp_price": 68364.0,
+      "sl_price": 66581.35,
+      "ratio": 1.6477,
+      "result": 1
+    },
+    {
+      "time_ms": 1721669400000,
+      "timestamp": "2024-07-22 17:30:00",
+      "dir": 2,
+      "entry": 67727.0,
+      "tp_price": 66583.0,
+      "sl_price": 67794.73,
+      "ratio": 1.4577,
+      "result": 1
+    },
+    {
+      "time_ms": 1722017700000,
+      "timestamp": "2024-07-26 18:15:00",
+      "dir": 2,
+      "entry": 67481.0,
+      "tp_price": 66911.0,
+      "sl_price": 67743.0,
+      "ratio": 1.6134,
+      "result": 0
+    },
+    {
+      "time_ms": 1722357000000,
+      "timestamp": "2024-07-30 16:30:00",
+      "dir": 1,
+      "entry": 66445.0,
+      "tp_price": 66919.0,
+      "sl_price": 65550.0,
+      "ratio": 1.5029,
+      "result": 0
+    },
+    {
+      "time_ms": 1722621600000,
+      "timestamp": "2024-08-02 18:00:00",
+      "dir": 2,
+      "entry": 64917.0,
+      "tp_price": 62346.0,
+      "sl_price": 65037.0,
+      "ratio": 1.9007,
+      "result": 1
+    },
+    {
+      "time_ms": 1722623400000,
+      "timestamp": "2024-08-02 18:30:00",
+      "dir": 2,
+      "entry": 64661.0,
+      "tp_price": 62346.0,
+      "sl_price": 64725.66,
+      "ratio": 1.9416,
+      "result": 1
+    },
+    {
+      "time_ms": 1723139100000,
+      "timestamp": "2024-08-08 17:45:00",
+      "dir": 1,
+      "entry": 57123.0,
+      "tp_price": 59878.0,
+      "sl_price": 57065.88,
+      "ratio": 1.4261,
+      "result": 1
+    },
+    {
+      "time_ms": 1723227300000,
+      "timestamp": "2024-08-09 18:15:00",
+      "dir": 2,
+      "entry": 60802.0,
+      "tp_price": 59571.0,
+      "sl_price": 60862.8,
+      "ratio": 1.4073,
+      "result": 1
+    },
+    {
+      "time_ms": 1723383000000,
+      "timestamp": "2024-08-11 13:30:00",
+      "dir": 2,
+      "entry": 61373.0,
+      "tp_price": 60195.0,
+      "sl_price": 61434.38,
+      "ratio": 1.4066,
+      "result": 1
+    },
+    {
+      "time_ms": 1723485600000,
+      "timestamp": "2024-08-12 18:00:00",
+      "dir": 1,
+      "entry": 58368.0,
+      "tp_price": 60700.0,
+      "sl_price": 58309.63,
+      "ratio": 1.6489,
+      "result": 1
+    },
+    {
+      "time_ms": 1723490100000,
+      "timestamp": "2024-08-12 19:15:00",
+      "dir": 2,
+      "entry": 60000.0,
+      "tp_price": 58475.0,
+      "sl_price": 60416.0,
+      "ratio": 1.515,
+      "result": 0
+    },
+    {
+      "time_ms": 1723653000000,
+      "timestamp": "2024-08-14 16:30:00",
+      "dir": 2,
+      "entry": 61314.0,
+      "tp_price": 58711.0,
+      "sl_price": 61375.32,
+      "ratio": 1.6616,
+      "result": 1
+    },
+    {
+      "time_ms": 1723740300000,
+      "timestamp": "2024-08-15 16:45:00",
+      "dir": 2,
+      "entry": 59047.0,
+      "tp_price": 58586.0,
+      "sl_price": 59851.0,
+      "ratio": 1.6038,
+      "result": 0
+    },
+    {
+      "time_ms": 1723830300000,
+      "timestamp": "2024-08-16 17:45:00",
+      "dir": 1,
+      "entry": 58273.0,
+      "tp_price": 59461.0,
+      "sl_price": 57667.0,
+      "ratio": 1.4546,
+      "result": 0
+    },
+    {
+      "time_ms": 1724262300000,
+      "timestamp": "2024-08-21 17:45:00",
+      "dir": 1,
+      "entry": 59118.0,
+      "tp_price": 60499.0,
+      "sl_price": 59058.88,
+      "ratio": 1.937,
+      "result": 1
+    },
+    {
+      "time_ms": 1724263200000,
+      "timestamp": "2024-08-21 18:00:00",
+      "dir": 2,
+      "entry": 59908.0,
+      "tp_price": 59254.0,
+      "sl_price": 60721.0,
+      "ratio": 1.6946,
+      "result": 0
+    },
+    {
+      "time_ms": 1724265900000,
+      "timestamp": "2024-08-21 18:45:00",
+      "dir": 2,
+      "entry": 59702.0,
+      "tp_price": 59344.0,
+      "sl_price": 61163.0,
+      "ratio": 1.4499,
+      "result": 0
+    },
+    {
+      "time_ms": 1724438700000,
+      "timestamp": "2024-08-23 18:45:00",
+      "dir": 2,
+      "entry": 61359.0,
+      "tp_price": 60933.0,
+      "sl_price": 63856.0,
+      "ratio": 1.8553,
+      "result": 0
+    },
+    {
+      "time_ms": 1724679000000,
+      "timestamp": "2024-08-26 13:30:00",
+      "dir": 1,
+      "entry": 63606.0,
+      "tp_price": 64050.0,
+      "sl_price": 63485.0,
+      "ratio": 1.4518,
+      "result": 0
+    },
+    {
+      "time_ms": 1724946300000,
+      "timestamp": "2024-08-29 15:45:00",
+      "dir": 2,
+      "entry": 60212.0,
+      "tp_price": 60012.0,
+      "sl_price": 61182.0,
+      "ratio": 1.43,
+      "result": 0
+    },
+    {
+      "time_ms": 1725039900000,
+      "timestamp": "2024-08-30 17:45:00",
+      "dir": 1,
+      "entry": 59331.0,
+      "tp_price": 59831.0,
+      "sl_price": 57721.0,
+      "ratio": 1.7606,
+      "result": 0
+    },
+    {
+      "time_ms": 1725040800000,
+      "timestamp": "2024-08-30 18:00:00",
+      "dir": 2,
+      "entry": 59473.0,
+      "tp_price": 57721.0,
+      "sl_price": 59532.48,
+      "ratio": 1.7051,
+      "result": 1
+    },
+    {
+      "time_ms": 1725474600000,
+      "timestamp": "2024-09-04 18:30:00",
+      "dir": 1,
+      "entry": 56450.0,
+      "tp_price": 58518.0,
+      "sl_price": 56393.55,
+      "ratio": 1.4644,
+      "result": 1
+    },
+    {
+      "time_ms": 1725559200000,
+      "timestamp": "2024-09-05 18:00:00",
+      "dir": 2,
+      "entry": 56883.0,
+      "tp_price": 55816.0,
+      "sl_price": 57253.0,
+      "ratio": 1.5296,
+      "result": 1
+    },
+    {
+      "time_ms": 1725560100000,
+      "timestamp": "2024-09-05 18:15:00",
+      "dir": 1,
+      "entry": 56925.0,
+      "tp_price": 57147.0,
+      "sl_price": 55816.0,
+      "ratio": 1.4427,
+      "result": 0
+    },
+    {
+      "time_ms": 1725561900000,
+      "timestamp": "2024-09-05 18:45:00",
+      "dir": 2,
+      "entry": 56883.0,
+      "tp_price": 55816.0,
+      "sl_price": 56939.89,
+      "ratio": 1.4264,
+      "result": 1
+    },
+    {
+      "time_ms": 1725643800000,
+      "timestamp": "2024-09-06 17:30:00",
+      "dir": 2,
+      "entry": 56691.0,
+      "tp_price": 53613.0,
+      "sl_price": 56747.7,
+      "ratio": 1.979,
+      "result": 1
+    },
+    {
+      "time_ms": 1726073100000,
+      "timestamp": "2024-09-11 16:45:00",
+      "dir": 1,
+      "entry": 56686.0,
+      "tp_price": 57764.0,
+      "sl_price": 55554.0,
+      "ratio": 1.5343,
+      "result": 0
+    },
+    {
+      "time_ms": 1726075800000,
+      "timestamp": "2024-09-11 17:30:00",
+      "dir": 2,
+      "entry": 56772.0,
+      "tp_price": 55554.0,
+      "sl_price": 57875.0,
+      "ratio": 1.5606,
+      "result": 0
+    },
+    {
+      "time_ms": 1726120800000,
+      "timestamp": "2024-09-12 06:00:00",
+      "dir": 2,
+      "entry": 58000.0,
+      "tp_price": 57855.0,
+      "sl_price": 58438.0,
+      "ratio": 1.5159,
+      "result": 1
+    },
+    {
+      "time_ms": 1726165800000,
+      "timestamp": "2024-09-12 18:30:00",
+      "dir": 2,
+      "entry": 58350.0,
+      "tp_price": 57417.0,
+      "sl_price": 58448.0,
+      "ratio": 1.6507,
+      "result": 0
+    },
+    {
+      "time_ms": 1726166700000,
+      "timestamp": "2024-09-12 18:45:00",
+      "dir": 2,
+      "entry": 58000.0,
+      "tp_price": 57417.0,
+      "sl_price": 58448.0,
+      "ratio": 1.5688,
+      "result": 0
+    },
+    {
+      "time_ms": 1726167600000,
+      "timestamp": "2024-09-12 19:00:00",
+      "dir": 1,
+      "entry": 57855.0,
+      "tp_price": 58448.0,
+      "sl_price": 57427.0,
+      "ratio": 1.4933,
+      "result": 1
+    },
+    {
+      "time_ms": 1726191000000,
+      "timestamp": "2024-09-13 01:30:00",
+      "dir": 2,
+      "entry": 58000.0,
+      "tp_price": 57823.0,
+      "sl_price": 58252.0,
+      "ratio": 1.4589,
+      "result": 0
+    },
+    {
+      "time_ms": 1726846200000,
+      "timestamp": "2024-09-20 15:30:00",
+      "dir": 1,
+      "entry": 63049.0,
+      "tp_price": 63379.0,
+      "sl_price": 62353.0,
+      "ratio": 1.4138,
+      "result": 0
+    },
+    {
+      "time_ms": 1727044200000,
+      "timestamp": "2024-09-22 22:30:00",
+      "dir": 1,
+      "entry": 62969.0,
+      "tp_price": 64406.0,
+      "sl_price": 62585.0,
+      "ratio": 1.6925,
+      "result": 0
+    },
+    {
+      "time_ms": 1727050500000,
+      "timestamp": "2024-09-23 00:15:00",
+      "dir": 1,
+      "entry": 62818.0,
+      "tp_price": 64730.0,
+      "sl_price": 62755.18,
+      "ratio": 1.508,
+      "result": 1
+    },
+    {
+      "time_ms": 1727360100000,
+      "timestamp": "2024-09-26 14:15:00",
+      "dir": 2,
+      "entry": 64705.0,
+      "tp_price": 64344.0,
+      "sl_price": 65851.0,
+      "ratio": 1.4725,
+      "result": 0
+    },
+    {
+      "time_ms": 1727361900000,
+      "timestamp": "2024-09-26 14:45:00",
+      "dir": 2,
+      "entry": 64705.0,
+      "tp_price": 64344.0,
+      "sl_price": 65851.0,
+      "ratio": 1.6471,
+      "result": 0
+    },
+    {
+      "time_ms": 1727961300000,
+      "timestamp": "2024-10-03 13:15:00",
+      "dir": 1,
+      "entry": 60135.0,
+      "tp_price": 60866.0,
+      "sl_price": 59918.0,
+      "ratio": 1.6411,
+      "result": 1
+    },
+    {
+      "time_ms": 1729002600000,
+      "timestamp": "2024-10-15 14:30:00",
+      "dir": 2,
+      "entry": 66479.0,
+      "tp_price": 64802.0,
+      "sl_price": 67371.0,
+      "ratio": 1.979,
+      "result": 0
+    },
+    {
+      "time_ms": 1729171800000,
+      "timestamp": "2024-10-17 13:30:00",
+      "dir": 1,
+      "entry": 66883.0,
+      "tp_price": 67664.0,
+      "sl_price": 66680.0,
+      "ratio": 1.5361,
+      "result": 0
+    },
+    {
+      "time_ms": 1729879200000,
+      "timestamp": "2024-10-25 18:00:00",
+      "dir": 1,
+      "entry": 66672.0,
+      "tp_price": 67504.0,
+      "sl_price": 66457.0,
+      "ratio": 1.4055,
+      "result": 1
+    },
+    {
+      "time_ms": 1730208600000,
+      "timestamp": "2024-10-29 13:30:00",
+      "dir": 1,
+      "entry": 71041.0,
+      "tp_price": 72994.0,
+      "sl_price": 70969.96,
+      "ratio": 1.7885,
+      "result": 1
+    },
+    {
+      "time_ms": 1730239200000,
+      "timestamp": "2024-10-29 22:00:00",
+      "dir": 1,
+      "entry": 71850.0,
+      "tp_price": 72949.0,
+      "sl_price": 71778.15,
+      "ratio": 1.4501,
+      "result": 1
+    },
+    {
+      "time_ms": 1730757600000,
+      "timestamp": "2024-11-04 22:00:00",
+      "dir": 1,
+      "entry": 67208.0,
+      "tp_price": 68110.0,
+      "sl_price": 67140.79,
+      "ratio": 1.4441,
+      "result": 1
+    },
+    {
+      "time_ms": 1730819700000,
+      "timestamp": "2024-11-05 15:15:00",
+      "dir": 2,
+      "entry": 69444.0,
+      "tp_price": 68759.0,
+      "sl_price": 70538.0,
+      "ratio": 1.4365,
+      "result": 0
+    },
+    {
+      "time_ms": 1731172500000,
+      "timestamp": "2024-11-09 17:15:00",
+      "dir": 1,
+      "entry": 75896.0,
+      "tp_price": 76724.0,
+      "sl_price": 75820.1,
+      "ratio": 1.4195,
+      "result": 1
+    },
+    {
+      "time_ms": 1731594600000,
+      "timestamp": "2024-11-14 14:30:00",
+      "dir": 2,
+      "entry": 91470.0,
+      "tp_price": 87580.0,
+      "sl_price": 91561.48,
+      "ratio": 1.7682,
+      "result": 1
+    },
+    {
+      "time_ms": 1732127400000,
+      "timestamp": "2024-11-20 18:30:00",
+      "dir": 2,
+      "entry": 94057.0,
+      "tp_price": 93266.0,
+      "sl_price": 94717.0,
+      "ratio": 1.5913,
+      "result": 0
+    },
+    {
+      "time_ms": 1733162400000,
+      "timestamp": "2024-12-02 18:00:00",
+      "dir": 1,
+      "entry": 94807.0,
+      "tp_price": 96352.0,
+      "sl_price": 94712.2,
+      "ratio": 1.4244,
+      "result": 1
+    },
+    {
+      "time_ms": 1733236200000,
+      "timestamp": "2024-12-03 14:30:00",
+      "dir": 1,
+      "entry": 94403.0,
+      "tp_price": 96281.0,
+      "sl_price": 94308.6,
+      "ratio": 1.6106,
+      "result": 1
+    },
+    {
+      "time_ms": 1733277600000,
+      "timestamp": "2024-12-04 02:00:00",
+      "dir": 2,
+      "entry": 96281.0,
+      "tp_price": 95322.0,
+      "sl_price": 96768.01,
+      "ratio": 1.7361,
+      "result": 0
+    },
+    {
+      "time_ms": 1733323500000,
+      "timestamp": "2024-12-04 14:45:00",
+      "dir": 2,
+      "entry": 96180.0,
+      "tp_price": 94661.0,
+      "sl_price": 96818.0,
+      "ratio": 1.4057,
+      "result": 0
+    },
+    {
+      "time_ms": 1733411700000,
+      "timestamp": "2024-12-05 15:15:00",
+      "dir": 2,
+      "entry": 103235.0,
+      "tp_price": 98641.0,
+      "sl_price": 103338.24,
+      "ratio": 1.9175,
+      "result": 1
+    },
+    {
+      "time_ms": 1733841000000,
+      "timestamp": "2024-12-10 14:30:00",
+      "dir": 1,
+      "entry": 97931.0,
+      "tp_price": 98300.0,
+      "sl_price": 94306.0,
+      "ratio": 1.5274,
+      "result": 0
+    },
+    {
+      "time_ms": 1733849100000,
+      "timestamp": "2024-12-10 16:45:00",
+      "dir": 1,
+      "entry": 95638.0,
+      "tp_price": 97014.0,
+      "sl_price": 94306.0,
+      "ratio": 1.4857,
+      "result": 0
+    },
+    {
+      "time_ms": 1734015600000,
+      "timestamp": "2024-12-12 15:00:00",
+      "dir": 2,
+      "entry": 101130.0,
+      "tp_price": 99395.0,
+      "sl_price": 102582.01,
+      "ratio": 1.5072,
+      "result": 0
+    },
+    {
+      "time_ms": 1734107400000,
+      "timestamp": "2024-12-13 16:30:00",
+      "dir": 1,
+      "entry": 100215.0,
+      "tp_price": 101918.01,
+      "sl_price": 100114.79,
+      "ratio": 1.5022,
+      "result": 1
+    },
+    {
+      "time_ms": 1734447600000,
+      "timestamp": "2024-12-17 15:00:00",
+      "dir": 2,
+      "entry": 107821.0,
+      "tp_price": 105731.0,
+      "sl_price": 107928.83,
+      "ratio": 1.7649,
+      "result": 1
+    },
+    {
+      "time_ms": 1734451200000,
+      "timestamp": "2024-12-17 16:00:00",
+      "dir": 1,
+      "entry": 106559.0,
+      "tp_price": 107664.01,
+      "sl_price": 106151.0,
+      "ratio": 1.4165,
+      "result": 0
+    },
+    {
+      "time_ms": 1734787800000,
+      "timestamp": "2024-12-21 13:30:00",
+      "dir": 1,
+      "entry": 97175.0,
+      "tp_price": 97714.99,
+      "sl_price": 96922.0,
+      "ratio": 1.5168,
+      "result": 1
+    },
+    {
+      "time_ms": 1735290000000,
+      "timestamp": "2024-12-27 09:00:00",
+      "dir": 1,
+      "entry": 95884.0,
+      "tp_price": 97163.0,
+      "sl_price": 95788.12,
+      "ratio": 1.7461,
+      "result": 1
+    },
+    {
+      "time_ms": 1736515800000,
+      "timestamp": "2025-01-10 13:30:00",
+      "dir": 1,
+      "entry": 93439.0,
+      "tp_price": 95797.01,
+      "sl_price": 92227.0,
+      "ratio": 1.5004,
+      "result": 0
+    },
+    {
+      "time_ms": 1736778600000,
+      "timestamp": "2025-01-13 14:30:00",
+      "dir": 1,
+      "entry": 90204.0,
+      "tp_price": 93061.99,
+      "sl_price": 90113.8,
+      "ratio": 1.7695,
+      "result": 1
+    },
+    {
+      "time_ms": 1737034200000,
+      "timestamp": "2025-01-16 13:30:00",
+      "dir": 1,
+      "entry": 99168.0,
+      "tp_price": 100340.0,
+      "sl_price": 97319.0,
+      "ratio": 1.4308,
+      "result": 0
+    },
+    {
+      "time_ms": 1737326700000,
+      "timestamp": "2025-01-19 22:45:00",
+      "dir": 1,
+      "entry": 103088.0,
+      "tp_price": 103297.99,
+      "sl_price": 99462.0,
+      "ratio": 1.4919,
+      "result": 0
+    },
+    {
+      "time_ms": 1737662400000,
+      "timestamp": "2025-01-23 20:00:00",
+      "dir": 1,
+      "entry": 104256.0,
+      "tp_price": 106445.01,
+      "sl_price": 102275.0,
+      "ratio": 1.5984,
+      "result": 0
+    },
+    {
+      "time_ms": 1737663300000,
+      "timestamp": "2025-01-23 20:15:00",
+      "dir": 1,
+      "entry": 103621.0,
+      "tp_price": 105854.0,
+      "sl_price": 102275.0,
+      "ratio": 1.5979,
+      "result": 0
+    },
+    {
+      "time_ms": 1737665100000,
+      "timestamp": "2025-01-23 20:45:00",
+      "dir": 2,
+      "entry": 104796.0,
+      "tp_price": 102275.0,
+      "sl_price": 104900.8,
+      "ratio": 1.498,
+      "result": 1
+    },
+    {
+      "time_ms": 1737729000000,
+      "timestamp": "2025-01-24 14:30:00",
+      "dir": 1,
+      "entry": 105059.0,
+      "tp_price": 107148.99,
+      "sl_price": 104953.95,
+      "ratio": 1.9613,
+      "result": 1
+    },
+    {
+      "time_ms": 1738083600000,
+      "timestamp": "2025-01-28 17:00:00",
+      "dir": 1,
+      "entry": 102410.0,
+      "tp_price": 103074.99,
+      "sl_price": 100598.0,
+      "ratio": 1.4522,
+      "result": 0
+    },
+    {
+      "time_ms": 1738179000000,
+      "timestamp": "2025-01-29 19:30:00",
+      "dir": 1,
+      "entry": 101669.0,
+      "tp_price": 104769.0,
+      "sl_price": 101567.34,
+      "ratio": 1.9069,
+      "result": 1
+    },
+    {
+      "time_ms": 1738698300000,
+      "timestamp": "2025-02-04 19:45:00",
+      "dir": 2,
+      "entry": 100474.0,
+      "tp_price": 96147.0,
+      "sl_price": 100574.48,
+      "ratio": 1.6687,
+      "result": 1
+    },
+    {
+      "time_ms": 1738852200000,
+      "timestamp": "2025-02-06 14:30:00",
+      "dir": 2,
+      "entry": 98444.0,
+      "tp_price": 95919.0,
+      "sl_price": 98542.45,
+      "ratio": 1.6315,
+      "result": 1
+    },
+    {
+      "time_ms": 1738943100000,
+      "timestamp": "2025-02-07 15:45:00",
+      "dir": 2,
+      "entry": 98937.0,
+      "tp_price": 96185.0,
+      "sl_price": 99035.95,
+      "ratio": 1.5098,
+      "result": 1
+    },
+    {
+      "time_ms": 1739367000000,
+      "timestamp": "2025-02-12 13:30:00",
+      "dir": 2,
+      "entry": 96214.0,
+      "tp_price": 94426.0,
+      "sl_price": 97694.0,
+      "ratio": 2.3235,
+      "result": 0
+    },
+    {
+      "time_ms": 1739373300000,
+      "timestamp": "2025-02-12 15:15:00",
+      "dir": 1,
+      "entry": 95079.0,
+      "tp_price": 97694.01,
+      "sl_price": 94983.92,
+      "ratio": 1.5794,
+      "result": 1
+    },
+    {
+      "time_ms": 1739545200000,
+      "timestamp": "2025-02-14 15:00:00",
+      "dir": 2,
+      "entry": 97189.0,
+      "tp_price": 96300.0,
+      "sl_price": 98871.0,
+      "ratio": 1.479,
+      "result": 0
+    },
+    {
+      "time_ms": 1739889000000,
+      "timestamp": "2025-02-18 14:30:00",
+      "dir": 2,
+      "entry": 96313.0,
+      "tp_price": 93340.0,
+      "sl_price": 96409.32,
+      "ratio": 1.4351,
+      "result": 1
+    },
+    {
+      "time_ms": 1740150900000,
+      "timestamp": "2025-02-21 15:15:00",
+      "dir": 2,
+      "entry": 98952.0,
+      "tp_price": 95178.0,
+      "sl_price": 99050.95,
+      "ratio": 2.1416,
+      "result": 1
+    },
+    {
+      "time_ms": 1740153600000,
+      "timestamp": "2025-02-21 16:00:00",
+      "dir": 1,
+      "entry": 98128.0,
+      "tp_price": 98759.99,
+      "sl_price": 95086.0,
+      "ratio": 1.513,
+      "result": 0
+    },
+    {
+      "time_ms": 1740665700000,
+      "timestamp": "2025-02-27 14:15:00",
+      "dir": 1,
+      "entry": 85797.0,
+      "tp_price": 86314.01,
+      "sl_price": 84274.0,
+      "ratio": 1.4441,
+      "result": 0
+    },
+    {
+      "time_ms": 1741095000000,
+      "timestamp": "2025-03-04 13:30:00",
+      "dir": 1,
+      "entry": 83002.0,
+      "tp_price": 85986.0,
+      "sl_price": 81463.0,
+      "ratio": 1.4127,
+      "result": 0
+    },
+    {
+      "time_ms": 1741355100000,
+      "timestamp": "2025-03-07 13:45:00",
+      "dir": 2,
+      "entry": 89434.0,
+      "tp_price": 86563.0,
+      "sl_price": 91081.0,
+      "ratio": 1.6954,
+      "result": 0
+    },
+    {
+      "time_ms": 1741357800000,
+      "timestamp": "2025-03-07 14:30:00",
+      "dir": 1,
+      "entry": 89134.0,
+      "tp_price": 91081.0,
+      "sl_price": 86563.0,
+      "ratio": 1.6065,
+      "result": 0
+    },
+    {
+      "time_ms": 1741360500000,
+      "timestamp": "2025-03-07 15:15:00",
+      "dir": 2,
+      "entry": 89679.0,
+      "tp_price": 86563.0,
+      "sl_price": 89768.68,
+      "ratio": 1.5922,
+      "result": 1
+    },
+    {
+      "time_ms": 1741536000000,
+      "timestamp": "2025-03-09 16:00:00",
+      "dir": 1,
+      "entry": 83011.0,
+      "tp_price": 83702.99,
+      "sl_price": 82201.0,
+      "ratio": 1.4579,
+      "result": 0
+    },
+    {
+      "time_ms": 1741698900000,
+      "timestamp": "2025-03-11 13:15:00",
+      "dir": 1,
+      "entry": 81180.0,
+      "tp_price": 81877.0,
+      "sl_price": 79031.0,
+      "ratio": 1.4637,
+      "result": 0
+    },
+    {
+      "time_ms": 1741869000000,
+      "timestamp": "2025-03-13 12:30:00",
+      "dir": 2,
+      "entry": 83492.0,
+      "tp_price": 80443.0,
+      "sl_price": 83575.49,
+      "ratio": 1.747,
+      "result": 1
+    },
+    {
+      "time_ms": 1741959000000,
+      "timestamp": "2025-03-14 13:30:00",
+      "dir": 2,
+      "entry": 83492.0,
+      "tp_price": 82638.0,
+      "sl_price": 85294.01,
+      "ratio": 1.4455,
+      "result": 0
+    },
+    {
+      "time_ms": 1741960800000,
+      "timestamp": "2025-03-14 14:00:00",
+      "dir": 2,
+      "entry": 83492.0,
+      "tp_price": 82638.0,
+      "sl_price": 85294.01,
+      "ratio": 1.5738,
+      "result": 0
+    },
+    {
+      "time_ms": 1742219100000,
+      "timestamp": "2025-03-17 13:45:00",
+      "dir": 2,
+      "entry": 83111.0,
+      "tp_price": 82466.0,
+      "sl_price": 84359.0,
+      "ratio": 1.4435,
+      "result": 0
+    },
+    {
+      "time_ms": 1742281200000,
+      "timestamp": "2025-03-18 07:00:00",
+      "dir": 1,
+      "entry": 82593.0,
+      "tp_price": 83440.0,
+      "sl_price": 82510.41,
+      "ratio": 1.5068,
+      "result": 0
+    },
+    {
+      "time_ms": 1742482800000,
+      "timestamp": "2025-03-20 15:00:00",
+      "dir": 1,
+      "entry": 85649.0,
+      "tp_price": 85964.0,
+      "sl_price": 83631.0,
+      "ratio": 1.4633,
+      "result": 0
+    },
+    {
+      "time_ms": 1742998500000,
+      "timestamp": "2025-03-26 14:15:00",
+      "dir": 2,
+      "entry": 86875.0,
+      "tp_price": 86190.0,
+      "sl_price": 87060.01,
+      "ratio": 1.4876,
+      "result": 1
+    },
+    {
+      "time_ms": 1743428700000,
+      "timestamp": "2025-03-31 13:45:00",
+      "dir": 1,
+      "entry": 82388.0,
+      "tp_price": 83914.0,
+      "sl_price": 82305.61,
+      "ratio": 1.7249,
+      "result": 1
+    },
+    {
+      "time_ms": 1743568200000,
+      "timestamp": "2025-04-02 04:30:00",
+      "dir": 1,
+      "entry": 82536.0,
+      "tp_price": 85397.0,
+      "sl_price": 82453.47,
+      "ratio": 2.0231,
+      "result": 1
+    },
+    {
+      "time_ms": 1743601500000,
+      "timestamp": "2025-04-02 13:45:00",
+      "dir": 2,
+      "entry": 85530.0,
+      "tp_price": 85223.0,
+      "sl_price": 87355.0,
+      "ratio": 1.4217,
+      "result": 0
+    },
+    {
+      "time_ms": 1743624900000,
+      "timestamp": "2025-04-02 20:15:00",
+      "dir": 2,
+      "entry": 87355.0,
+      "tp_price": 82157.0,
+      "sl_price": 87442.36,
+      "ratio": 1.9063,
+      "result": 1
+    },
+    {
+      "time_ms": 1744033500000,
+      "timestamp": "2025-04-07 13:45:00",
+      "dir": 1,
+      "entry": 76389.0,
+      "tp_price": 81179.99,
+      "sl_price": 76312.61,
+      "ratio": 1.487,
+      "result": 1
+    },
+    {
+      "time_ms": 1744035300000,
+      "timestamp": "2025-04-07 14:15:00",
+      "dir": 2,
+      "entry": 79292.0,
+      "tp_price": 77292.0,
+      "sl_price": 79727.0,
+      "ratio": 1.4285,
+      "result": 1
+    },
+    {
+      "time_ms": 1744156800000,
+      "timestamp": "2025-04-09 00:00:00",
+      "dir": 1,
+      "entry": 76159.0,
+      "tp_price": 76799.0,
+      "sl_price": 74588.0,
+      "ratio": 1.4284,
+      "result": 0
+    },
+    {
+      "time_ms": 1744381800000,
+      "timestamp": "2025-04-11 14:30:00",
+      "dir": 1,
+      "entry": 81796.0,
+      "tp_price": 84166.0,
+      "sl_price": 81680.0,
+      "ratio": 1.4196,
+      "result": 1
+    },
+    {
+      "time_ms": 1744576200000,
+      "timestamp": "2025-04-13 20:30:00",
+      "dir": 2,
+      "entry": 83974.0,
+      "tp_price": 83031.0,
+      "sl_price": 85069.0,
+      "ratio": 1.6544,
+      "result": 0
+    },
+    {
+      "time_ms": 1744826400000,
+      "timestamp": "2025-04-16 18:00:00",
+      "dir": 1,
+      "entry": 83582.0,
+      "tp_price": 84672.01,
+      "sl_price": 83498.42,
+      "ratio": 1.5112,
+      "result": 1
+    },
+    {
+      "time_ms": 1745244000000,
+      "timestamp": "2025-04-21 14:00:00",
+      "dir": 1,
+      "entry": 87358.0,
+      "tp_price": 88527.0,
+      "sl_price": 86404.0,
+      "ratio": 1.5815,
+      "result": 0
+    },
+    {
+      "time_ms": 1745590500000,
+      "timestamp": "2025-04-25 14:15:00",
+      "dir": 2,
+      "entry": 95011.0,
+      "tp_price": 94444.0,
+      "sl_price": 95857.0,
+      "ratio": 1.5163,
+      "result": 0
+    },
+    {
+      "time_ms": 1745848800000,
+      "timestamp": "2025-04-28 14:00:00",
+      "dir": 1,
+      "entry": 94408.0,
+      "tp_price": 94928.01,
+      "sl_price": 93483.0,
+      "ratio": 1.4535,
+      "result": 0
+    },
+    {
+      "time_ms": 1746022500000,
+      "timestamp": "2025-04-30 14:15:00",
+      "dir": 1,
+      "entry": 93775.0,
+      "tp_price": 94500.01,
+      "sl_price": 93530.0,
+      "ratio": 1.4209,
+      "result": 1
+    },
+    {
+      "time_ms": 1746323100000,
+      "timestamp": "2025-05-04 01:45:00",
+      "dir": 1,
+      "entry": 95938.0,
+      "tp_price": 96295.0,
+      "sl_price": 95696.0,
+      "ratio": 1.5131,
+      "result": 1
+    },
+    {
+      "time_ms": 1746452700000,
+      "timestamp": "2025-05-05 13:45:00",
+      "dir": 1,
+      "entry": 94036.0,
+      "tp_price": 94701.0,
+      "sl_price": 93618.0,
+      "ratio": 1.4624,
+      "result": 0
+    },
+    {
+      "time_ms": 1746646200000,
+      "timestamp": "2025-05-07 19:30:00",
+      "dir": 1,
+      "entry": 96318.0,
+      "tp_price": 97376.0,
+      "sl_price": 96090.0,
+      "ratio": 1.4753,
+      "result": 1
+    },
+    {
+      "time_ms": 1747035000000,
+      "timestamp": "2025-05-12 07:30:00",
+      "dir": 2,
+      "entry": 105079.0,
+      "tp_price": 103645.0,
+      "sl_price": 105184.09,
+      "ratio": 1.5962,
+      "result": 1
+    },
+    {
+      "time_ms": 1747407600000,
+      "timestamp": "2025-05-16 15:00:00",
+      "dir": 1,
+      "entry": 103845.0,
+      "tp_price": 104570.01,
+      "sl_price": 103622.0,
+      "ratio": 1.4326,
+      "result": 0
+    },
+    {
+      "time_ms": 1748276100000,
+      "timestamp": "2025-05-26 16:15:00",
+      "dir": 2,
+      "entry": 110107.0,
+      "tp_price": 108868.0,
+      "sl_price": 110217.11,
+      "ratio": 1.6654,
+      "result": 1
+    },
+    {
+      "time_ms": 1748355300000,
+      "timestamp": "2025-05-27 14:15:00",
+      "dir": 2,
+      "entry": 109915.0,
+      "tp_price": 108766.0,
+      "sl_price": 110545.0,
+      "ratio": 1.4834,
+      "result": 0
+    },
+    {
+      "time_ms": 1748356200000,
+      "timestamp": "2025-05-27 14:30:00",
+      "dir": 1,
+      "entry": 109473.0,
+      "tp_price": 110544.99,
+      "sl_price": 109081.0,
+      "ratio": 1.5925,
+      "result": 1
+    },
+    {
+      "time_ms": 1748529000000,
+      "timestamp": "2025-05-29 14:30:00",
+      "dir": 1,
+      "entry": 107001.0,
+      "tp_price": 107832.0,
+      "sl_price": 105718.0,
+      "ratio": 1.4267,
+      "result": 0
+    },
+    {
+      "time_ms": 1750624200000,
+      "timestamp": "2025-06-22 20:30:00",
+      "dir": 1,
+      "entry": 98723.0,
+      "tp_price": 101644.0,
+      "sl_price": 98624.28,
+      "ratio": 1.4395,
+      "result": 1
+    },
+    {
+      "time_ms": 1753146900000,
+      "timestamp": "2025-07-22 01:15:00",
+      "dir": 1,
+      "entry": 116710.0,
+      "tp_price": 117973.0,
+      "sl_price": 116593.29,
+      "ratio": 1.5777,
+      "result": 1
+    },
+    {
+      "time_ms": 1754056800000,
+      "timestamp": "2025-08-01 14:00:00",
+      "dir": 1,
+      "entry": 114568.0,
+      "tp_price": 115802.0,
+      "sl_price": 113547.0,
+      "ratio": 1.5503,
+      "result": 0
+    },
+    {
+      "time_ms": 1755005400000,
+      "timestamp": "2025-08-12 13:30:00",
+      "dir": 2,
+      "entry": 119305.0,
+      "tp_price": 118625.0,
+      "sl_price": 120207.01,
+      "ratio": 1.4362,
+      "result": 0
+    },
+    {
+      "time_ms": 1755174600000,
+      "timestamp": "2025-08-14 12:30:00",
+      "dir": 1,
+      "entry": 118940.0,
+      "tp_price": 119785.0,
+      "sl_price": 117439.0,
+      "ratio": 1.559,
+      "result": 0
+    },
+    {
+      "time_ms": 1755690300000,
+      "timestamp": "2025-08-20 11:45:00",
+      "dir": 1,
+      "entry": 113420.0,
+      "tp_price": 114331.0,
+      "sl_price": 112353.0,
+      "ratio": 1.4131,
+      "result": 0
+    },
+    {
+      "time_ms": 1755699300000,
+      "timestamp": "2025-08-20 14:15:00",
+      "dir": 1,
+      "entry": 112702.0,
+      "tp_price": 114455.0,
+      "sl_price": 112589.3,
+      "ratio": 1.4117,
+      "result": 1
+    },
+    {
+      "time_ms": 1756325700000,
+      "timestamp": "2025-08-27 20:15:00",
+      "dir": 1,
+      "entry": 111557.0,
+      "tp_price": 112465.01,
+      "sl_price": 110876.0,
+      "ratio": 1.5971,
+      "result": 0
+    },
+    {
+      "time_ms": 1758132000000,
+      "timestamp": "2025-09-17 18:00:00",
+      "dir": 2,
+      "entry": 115918.0,
+      "tp_price": 114747.0,
+      "sl_price": 116425.99,
+      "ratio": 1.4648,
+      "result": 0
+    },
+    {
+      "time_ms": 1758132900000,
+      "timestamp": "2025-09-17 18:15:00",
+      "dir": 1,
+      "entry": 115410.0,
+      "tp_price": 116870.01,
+      "sl_price": 114747.0,
+      "ratio": 1.6439,
+      "result": 0
+    },
+    {
+      "time_ms": 1758133800000,
+      "timestamp": "2025-09-17 18:30:00",
+      "dir": 2,
+      "entry": 115562.0,
+      "tp_price": 114747.0,
+      "sl_price": 117030.01,
+      "ratio": 1.7603,
+      "result": 0
+    },
+    {
+      "time_ms": 1760238000000,
+      "timestamp": "2025-10-12 03:00:00",
+      "dir": 1,
+      "entry": 110225.0,
+      "tp_price": 112213.01,
+      "sl_price": 110114.77,
+      "ratio": 1.45,
+      "result": 1
+    },
+    {
+      "time_ms": 1760363100000,
+      "timestamp": "2025-10-13 13:45:00",
+      "dir": 1,
+      "entry": 114899.0,
+      "tp_price": 115586.0,
+      "sl_price": 113951.0,
+      "ratio": 1.4597,
+      "result": 0
+    },
+    {
+      "time_ms": 1760364900000,
+      "timestamp": "2025-10-13 14:15:00",
+      "dir": 2,
+      "entry": 114777.0,
+      "tp_price": 113951.0,
+      "sl_price": 115478.99,
+      "ratio": 1.513,
+      "result": 0
+    },
+    {
+      "time_ms": 1760470200000,
+      "timestamp": "2025-10-14 19:30:00",
+      "dir": 2,
+      "entry": 113230.0,
+      "tp_price": 112105.0,
+      "sl_price": 113599.99,
+      "ratio": 1.571,
+      "result": 0
+    },
+    {
+      "time_ms": 1760607000000,
+      "timestamp": "2025-10-16 09:30:00",
+      "dir": 1,
+      "entry": 110432.0,
+      "tp_price": 112012.01,
+      "sl_price": 110252.0,
+      "ratio": 1.8858,
+      "result": 0
+    },
+    {
+      "time_ms": 1761130800000,
+      "timestamp": "2025-10-22 11:00:00",
+      "dir": 1,
+      "entry": 107653.0,
+      "tp_price": 109159.99,
+      "sl_price": 107394.0,
+      "ratio": 1.8737,
+      "result": 1
+    },
+    {
+      "time_ms": 1761913800000,
+      "timestamp": "2025-10-31 12:30:00",
+      "dir": 2,
+      "entry": 109991.0,
+      "tp_price": 108572.0,
+      "sl_price": 111049.0,
+      "ratio": 1.4295,
+      "result": 0
+    },
+    {
+      "time_ms": 1762266600000,
+      "timestamp": "2025-11-04 14:30:00",
+      "dir": 1,
+      "entry": 103553.0,
+      "tp_price": 104782.01,
+      "sl_price": 99939.0,
+      "ratio": 1.502,
+      "result": 0
+    },
+    {
+      "time_ms": 1763046900000,
+      "timestamp": "2025-11-13 15:15:00",
+      "dir": 2,
+      "entry": 102569.0,
+      "tp_price": 98081.0,
+      "sl_price": 102671.57,
+      "ratio": 1.4694,
+      "result": 1
+    },
+    {
+      "time_ms": 1763102700000,
+      "timestamp": "2025-11-14 06:45:00",
+      "dir": 1,
+      "entry": 96712.0,
+      "tp_price": 97677.0,
+      "sl_price": 96354.0,
+      "ratio": 1.5252,
+      "result": 0
+    },
+    {
+      "time_ms": 1763389800000,
+      "timestamp": "2025-11-17 14:30:00",
+      "dir": 2,
+      "entry": 95490.0,
+      "tp_price": 92202.0,
+      "sl_price": 95585.49,
+      "ratio": 1.6774,
+      "result": 1
+    },
+    {
+      "time_ms": 1763565300000,
+      "timestamp": "2025-11-19 15:15:00",
+      "dir": 2,
+      "entry": 91816.0,
+      "tp_price": 88523.0,
+      "sl_price": 91907.82,
+      "ratio": 1.9197,
+      "result": 1
+    },
+    {
+      "time_ms": 1763645400000,
+      "timestamp": "2025-11-20 13:30:00",
+      "dir": 2,
+      "entry": 91947.0,
+      "tp_price": 86290.0,
+      "sl_price": 92038.95,
+      "ratio": 1.4666,
+      "result": 1
+    },
+    {
+      "time_ms": 1763728200000,
+      "timestamp": "2025-11-21 12:30:00",
+      "dir": 1,
+      "entry": 81542.0,
+      "tp_price": 85408.99,
+      "sl_price": 81460.46,
+      "ratio": 1.5445,
+      "result": 1
+    },
+    {
+      "time_ms": 1763994600000,
+      "timestamp": "2025-11-24 14:30:00",
+      "dir": 2,
+      "entry": 86272.0,
+      "tp_price": 85225.0,
+      "sl_price": 88831.0,
+      "ratio": 1.535,
+      "result": 0
+    },
+    {
+      "time_ms": 1763995500000,
+      "timestamp": "2025-11-24 14:45:00",
+      "dir": 1,
+      "entry": 85828.0,
+      "tp_price": 88831.01,
+      "sl_price": 85742.17,
+      "ratio": 1.4309,
+      "result": 1
+    },
+    {
+      "time_ms": 1764772200000,
+      "timestamp": "2025-12-03 14:30:00",
+      "dir": 1,
+      "entry": 92701.0,
+      "tp_price": 93519.0,
+      "sl_price": 91806.0,
+      "ratio": 1.8622,
+      "result": 0
+    },
+    {
+      "time_ms": 1764773100000,
+      "timestamp": "2025-12-03 14:45:00",
+      "dir": 2,
+      "entry": 93405.0,
+      "tp_price": 91806.0,
+      "sl_price": 93517.01,
+      "ratio": 1.8355,
+      "result": 1
+    },
+    {
+      "time_ms": 1764860400000,
+      "timestamp": "2025-12-04 15:00:00",
+      "dir": 1,
+      "entry": 92396.0,
+      "tp_price": 93259.01,
+      "sl_price": 90903.0,
+      "ratio": 1.4471,
+      "result": 0
+    },
+    {
+      "time_ms": 1765204200000,
+      "timestamp": "2025-12-08 14:30:00",
+      "dir": 1,
+      "entry": 91230.0,
+      "tp_price": 91673.0,
+      "sl_price": 89618.0,
+      "ratio": 1.662,
+      "result": 0
+    },
+    {
+      "time_ms": 1765393200000,
+      "timestamp": "2025-12-10 19:00:00",
+      "dir": 1,
+      "entry": 92421.0,
+      "tp_price": 94494.0,
+      "sl_price": 91910.0,
+      "ratio": 1.9179,
+      "result": 0
+    },
+    {
+      "time_ms": 1765399500000,
+      "timestamp": "2025-12-10 20:45:00",
+      "dir": 2,
+      "entry": 93263.0,
+      "tp_price": 90731.0,
+      "sl_price": 93356.27,
+      "ratio": 1.6345,
+      "result": 1
+    },
+    {
+      "time_ms": 1765465200000,
+      "timestamp": "2025-12-11 15:00:00",
+      "dir": 1,
+      "entry": 90006.0,
+      "tp_price": 91548.99,
+      "sl_price": 89349.0,
+      "ratio": 1.6136,
+      "result": 0
+    },
+    {
+      "time_ms": 1765809000000,
+      "timestamp": "2025-12-15 14:30:00",
+      "dir": 2,
+      "entry": 89407.0,
+      "tp_price": 85140.0,
+      "sl_price": 89496.41,
+      "ratio": 1.5591,
+      "result": 1
+    },
+    {
+      "time_ms": 1766114100000,
+      "timestamp": "2025-12-19 03:15:00",
+      "dir": 1,
+      "entry": 86241.0,
+      "tp_price": 88326.0,
+      "sl_price": 86154.76,
+      "ratio": 1.5137,
+      "result": 1
+    },
+    {
+      "time_ms": 1766157300000,
+      "timestamp": "2025-12-19 15:15:00",
+      "dir": 2,
+      "entry": 88319.0,
+      "tp_price": 86796.0,
+      "sl_price": 88833.0,
+      "ratio": 1.7551,
+      "result": 1
+    },
+    {
+      "time_ms": 1766362500000,
+      "timestamp": "2025-12-22 00:15:00",
+      "dir": 2,
+      "entry": 89017.0,
+      "tp_price": 87893.0,
+      "sl_price": 89262.0,
+      "ratio": 1.4541,
+      "result": 1
+    },
+    {
+      "time_ms": 1766415600000,
+      "timestamp": "2025-12-22 15:00:00",
+      "dir": 2,
+      "entry": 89854.0,
+      "tp_price": 88256.0,
+      "sl_price": 90069.99,
+      "ratio": 1.6103,
+      "result": 1
+    },
+    {
+      "time_ms": 1766586600000,
+      "timestamp": "2025-12-24 14:30:00",
+      "dir": 1,
+      "entry": 86666.0,
+      "tp_price": 87602.99,
+      "sl_price": 86532.0,
+      "ratio": 1.5346,
+      "result": 1
+    },
+    {
+      "time_ms": 1767364200000,
+      "timestamp": "2026-01-02 14:30:00",
+      "dir": 1,
+      "entry": 88692.0,
+      "tp_price": 90925.0,
+      "sl_price": 88603.31,
+      "ratio": 1.7561,
+      "result": 1
+    },
+    {
+      "time_ms": 1767713400000,
+      "timestamp": "2026-01-06 15:30:00",
+      "dir": 2,
+      "entry": 93940.0,
+      "tp_price": 91221.0,
+      "sl_price": 94033.95,
+      "ratio": 1.6913,
+      "result": 1
+    },
+    {
+      "time_ms": 1768172400000,
+      "timestamp": "2026-01-11 23:00:00",
+      "dir": 1,
+      "entry": 90396.0,
+      "tp_price": 92392.0,
+      "sl_price": 90305.6,
+      "ratio": 1.588,
+      "result": 1
+    },
+    {
+      "time_ms": 1768228200000,
+      "timestamp": "2026-01-12 14:30:00",
+      "dir": 1,
+      "entry": 90301.0,
+      "tp_price": 92244.0,
+      "sl_price": 90210.7,
+      "ratio": 1.5463,
+      "result": 1
+    },
+    {
+      "time_ms": 1768491900000,
+      "timestamp": "2026-01-15 15:45:00",
+      "dir": 1,
+      "entry": 95753.0,
+      "tp_price": 97040.0,
+      "sl_price": 95161.0,
+      "ratio": 1.7326,
+      "result": 0
+    },
+    {
+      "time_ms": 1768864500000,
+      "timestamp": "2026-01-19 23:15:00",
+      "dir": 1,
+      "entry": 92459.0,
+      "tp_price": 92798.99,
+      "sl_price": 92193.0,
+      "ratio": 1.4292,
+      "result": 0
+    },
+    {
+      "time_ms": 1769095800000,
+      "timestamp": "2026-01-22 15:30:00",
+      "dir": 1,
+      "entry": 88897.0,
+      "tp_price": 89835.0,
+      "sl_price": 88583.0,
+      "ratio": 1.4139,
+      "result": 1
+    },
+    {
+      "time_ms": 1769441400000,
+      "timestamp": "2026-01-26 15:30:00",
+      "dir": 2,
+      "entry": 88285.0,
+      "tp_price": 86942.0,
+      "sl_price": 88447.0,
+      "ratio": 1.8929,
+      "result": 0
+    },
+    {
+      "time_ms": 1769533200000,
+      "timestamp": "2026-01-27 17:00:00",
+      "dir": 2,
+      "entry": 88285.0,
+      "tp_price": 87197.0,
+      "sl_price": 89416.0,
+      "ratio": 1.4657,
+      "result": 0
+    },
+    {
+      "time_ms": 1769784300000,
+      "timestamp": "2026-01-30 14:45:00",
+      "dir": 2,
+      "entry": 83178.0,
+      "tp_price": 81752.0,
+      "sl_price": 84395.0,
+      "ratio": 1.6105,
+      "result": 0
+    },
+    {
+      "time_ms": 1769786100000,
+      "timestamp": "2026-01-30 15:15:00",
+      "dir": 2,
+      "entry": 83178.0,
+      "tp_price": 81752.0,
+      "sl_price": 84499.99,
+      "ratio": 1.6734,
+      "result": 0
+    },
+    {
+      "time_ms": 1769876100000,
+      "timestamp": "2026-01-31 16:15:00",
+      "dir": 1,
+      "entry": 80743.0,
+      "tp_price": 81156.0,
+      "sl_price": 75555.0,
+      "ratio": 1.5691,
+      "result": 0
+    },
+    {
+      "time_ms": 1770040800000,
+      "timestamp": "2026-02-02 14:00:00",
+      "dir": 2,
+      "entry": 78019.0,
+      "tp_price": 77534.0,
+      "sl_price": 79301.0,
+      "ratio": 1.4534,
+      "result": 0
+    },
+    {
+      "time_ms": 1770043500000,
+      "timestamp": "2026-02-02 14:45:00",
+      "dir": 2,
+      "entry": 78321.0,
+      "tp_price": 77534.0,
+      "sl_price": 79301.0,
+      "ratio": 1.8226,
+      "result": 0
+    },
+    {
+      "time_ms": 1770134400000,
+      "timestamp": "2026-02-03 16:00:00",
+      "dir": 2,
+      "entry": 77777.0,
+      "tp_price": 72863.0,
+      "sl_price": 77854.78,
+      "ratio": 1.5327,
+      "result": 1
+    },
+    {
+      "time_ms": 1770647400000,
+      "timestamp": "2026-02-09 14:30:00",
+      "dir": 1,
+      "entry": 68932.0,
+      "tp_price": 70955.0,
+      "sl_price": 68783.0,
+      "ratio": 1.5363,
+      "result": 1
+    },
+    {
+      "time_ms": 1770736500000,
+      "timestamp": "2026-02-10 15:15:00",
+      "dir": 1,
+      "entry": 68657.0,
+      "tp_price": 69965.0,
+      "sl_price": 68582.0,
+      "ratio": 1.5145,
+      "result": 1
+    },
+    {
+      "time_ms": 1770906600000,
+      "timestamp": "2026-02-12 14:30:00",
+      "dir": 2,
+      "entry": 67995.0,
+      "tp_price": 65080.0,
+      "sl_price": 68063.0,
+      "ratio": 1.5863,
+      "result": 1
+    },
+    {
+      "time_ms": 1770993000000,
+      "timestamp": "2026-02-13 14:30:00",
+      "dir": 2,
+      "entry": 67281.0,
+      "tp_price": 67213.72,
+      "sl_price": 69405.0,
+      "ratio": 1.5333,
+      "result": 0
+    },
+    {
+      "time_ms": 1771293600000,
+      "timestamp": "2026-02-17 02:00:00",
+      "dir": 1,
+      "entry": 68767.0,
+      "tp_price": 69146.0,
+      "sl_price": 67869.0,
+      "ratio": 1.8048,
+      "result": 0
+    },
+    {
+      "time_ms": 1771425900000,
+      "timestamp": "2026-02-18 14:45:00",
+      "dir": 1,
+      "entry": 67080.0,
+      "tp_price": 68314.0,
+      "sl_price": 66105.0,
+      "ratio": 1.4113,
+      "result": 0
+    },
+    {
+      "time_ms": 1771429500000,
+      "timestamp": "2026-02-18 15:45:00",
+      "dir": 2,
+      "entry": 67891.0,
+      "tp_price": 65840.0,
+      "sl_price": 67958.89,
+      "ratio": 1.4288,
+      "result": 1
+    },
+    {
+      "time_ms": 1771511400000,
+      "timestamp": "2026-02-19 14:30:00",
+      "dir": 1,
+      "entry": 65840.0,
+      "tp_price": 67172.0,
+      "sl_price": 65774.16,
+      "ratio": 1.4559,
+      "result": 1
+    },
+    {
+      "time_ms": 1771599600000,
+      "timestamp": "2026-02-20 15:00:00",
+      "dir": 2,
+      "entry": 67443.0,
+      "tp_price": 66545.0,
+      "sl_price": 67988.0,
+      "ratio": 1.6004,
+      "result": 0
+    }
+  ]
+}
