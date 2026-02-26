@@ -206,14 +206,18 @@ def compute_tp_sl_labels(df_high, df_low, df_close, actions, swept_levels, horiz
         end_close = df_close[i + horizon]
 
         # Determine profitability (quality label)
+        # Allow 0.1% buffer beyond SFP candle's extreme for stop check
+        stop_buffer = 0.001
         if actions[i] == 1:  # long
             tp = (max_high - entry) / entry
             sl = (entry - min_low) / entry
-            profitable = end_close > entry and min_low > df_low[i]
+            stop_level = df_low[i] * (1 - stop_buffer)
+            profitable = end_close > entry and min_low > stop_level
         else:  # short
             tp = (entry - min_low) / entry
             sl = (max_high - entry) / entry
-            profitable = end_close < entry and max_high < df_high[i]
+            stop_level = df_high[i] * (1 + stop_buffer)
+            profitable = end_close < entry and max_high < stop_level
 
         quality[i] = 1 if profitable else 0
         tp_labels[i] = np.clip(tp, 0.001, 0.10)

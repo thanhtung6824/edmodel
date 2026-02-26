@@ -5,3 +5,4 @@ __pycache__/
 best_model.pth
 best_model_reg.pth
 signals_*.pine
+recent_data.json
