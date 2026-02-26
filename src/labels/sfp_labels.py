@@ -190,7 +190,7 @@ def compute_tp_sl_labels(df_high, df_low, df_close, actions, swept_levels, horiz
     for i in range(length):
         if actions[i] == 0:
             continue
-        if i + horizon > length:
+        if i + horizon >= length:
             actions[i] = 0
             continue
 

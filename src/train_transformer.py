@@ -1,11 +1,14 @@
 """SFP Transformer training: predict TP/SL, use ratio as quality filter.
 
 Usage:
-    python -m src.train_transformer              # default: 4h only
+    python -m src.train_transformer              # default: 4h only, all assets with CSVs
     python -m src.train_transformer 1h           # 1h only
     python -m src.train_transformer 4h 1h 15min  # all timeframes combined
+    python -m src.train_transformer 4h 1h 15min --assets btc gold silver
+    python -m src.train_transformer 4h 1h 15min --assets btc gold --resume  # continue from existing weights
 """
 
+import os
 import sys
 import numpy as np
 import pandas as pd
@@ -22,12 +25,39 @@ from src.models.sfp_transformer import SFPTransformer
 device = torch.accelerator.current_accelerator().type if torch.accelerator.is_available() else "cpu"
 print(f"Using {device} device")
 
-TIMEFRAMES = sys.argv[1:] if len(sys.argv) > 1 else ["4h"]
+ASSETS = {
+    "btc": {"prefix": "btc", "asset_id": 1.0, "symbol": "BTCUSDT"},
+    "gold": {"prefix": "gold", "asset_id": 2.0, "symbol": "XAUUSDT"},
+    "silver": {"prefix": "silver", "asset_id": 3.0, "symbol": "XAGUSDT"},
+    "sol": {"prefix": "sol", "asset_id": 4.0, "symbol": "SOLUSDT"},
+    "eth": {"prefix": "eth", "asset_id": 5.0, "symbol": "ETHUSDT"},
+}
+
+# Parse CLI: positional args are timeframes, --assets and --resume flags
+args = sys.argv[1:]
+RESUME = "--resume" in args
+if RESUME:
+    args.remove("--resume")
+if "--assets" in args:
+    idx = args.index("--assets")
+    TIMEFRAMES = args[:idx] if idx > 0 else ["4h"]
+    SELECTED_ASSETS = args[idx + 1:]
+else:
+    TIMEFRAMES = args if args else ["4h"]
+    SELECTED_ASSETS = []
+
+# Default: all assets that have at least one CSV file in data/
+if not SELECTED_ASSETS:
+    SELECTED_ASSETS = [
+        name for name, cfg in ASSETS.items()
+        if any(os.path.exists(f"data/{cfg['prefix']}_{tf}.csv") for tf in TIMEFRAMES)
+    ]
+
 MODEL_FILE = "best_model_transformer.pth"
 
 # Map timeframe string to hours for the context feature
 TF_HOURS = {"15min": 0.25, "1h": 1.0, "4h": 4.0}
-print(f"Training on: {TIMEFRAMES} | Model: {MODEL_FILE}")
+print(f"Training on: {TIMEFRAMES} | Assets: {SELECTED_ASSETS} | Model: {MODEL_FILE}")
 
 class RankingRegLoss(nn.Module):
     """Regression loss + margin ranking loss on predicted TP/SL ratio.
@@ -76,8 +106,8 @@ class RankingRegLoss(nn.Module):
         total = reg_loss + self.lambda_rank * rank_loss
         return total, tp_loss, sl_loss
 
-def build_features(df, actions, tf_hours):
-    """Build 21 features for one timeframe's data."""
+def build_features(df, actions, tf_hours, asset_id=1.0):
+    """Build 22 features for one timeframe's data."""
     highs = df["High"].values
     lows = df["Low"].values
     closes = df["Close"].values
@@ -149,7 +179,7 @@ def build_features(df, actions, tf_hours):
 
     # Context features
     feat["tf_hours"] = tf_hours / 4.0  # timeframe in hours (normalized by 4h)
-    feat["asset_id"] = 1.0  # BTC=1.0, later: ETH=2.0, SOL=3.0, etc.
+    feat["asset_id"] = asset_id
 
     # Drop warmup
     drop_n = 30
@@ -172,55 +202,63 @@ def load_data_set():
     train_feats, train_actions, train_quality, train_tp, train_sl = [], [], [], [], []
     test_feats, test_actions, test_quality, test_tp, test_sl = [], [], [], [], []
 
-    for tf in TIMEFRAMES:
-        data_file = f"data/btc_{tf}.csv"
-        tf_hours = TF_HOURS[tf]
-        print(f"\nLoading {tf} from {data_file}...")
-        df = pd.read_csv(data_file).reset_index(drop=True)
+    for asset_name in SELECTED_ASSETS:
+        asset_cfg = ASSETS[asset_name]
+        prefix = asset_cfg["prefix"]
+        asset_id = asset_cfg["asset_id"]
 
-        highs = df["High"].values
-        lows = df["Low"].values
-        closes = df["Close"].values
-        opens = df["Open"].values
+        for tf in TIMEFRAMES:
+            data_file = f"data/{prefix}_{tf}.csv"
+            if not os.path.exists(data_file):
+                print(f"\n  WARNING: {data_file} not found, skipping {asset_name}/{tf}")
+                continue
 
-        actions, quality, tp_labels, sl_labels = generate_labels(highs, lows, closes, opens)
-        feat, actions = build_features(df, actions, tf_hours)
+            tf_hours = TF_HOURS[tf]
+            print(f"\nLoading {asset_name}/{tf} from {data_file}...")
+            df = pd.read_csv(data_file).reset_index(drop=True)
 
-        # Align labels with dropped warmup
-        drop_n = 30
-        quality = quality[drop_n:]
-        tp_labels = tp_labels[drop_n:]
-        sl_labels = sl_labels[drop_n:]
+            highs = df["High"].values
+            lows = df["Low"].values
+            closes = df["Close"].values
+            opens = df["Open"].values
 
-        feat_values = feat.values.astype(np.float32)
-        sfp_mask = actions != 0
-        total_sfp = int(np.sum(sfp_mask))
-        n_profitable = int(np.sum(quality[sfp_mask] == 1))
-        print(f"  {tf}: {len(feat_values)} bars, {total_sfp} SFPs, {n_profitable} profitable ({n_profitable/total_sfp*100:.0f}%)")
+            actions, quality, tp_labels, sl_labels = generate_labels(highs, lows, closes, opens)
+            feat, actions = build_features(df, actions, tf_hours, asset_id=asset_id)
 
-        # --- Option B: Normalize TP/SL per timeframe ---
-        # Compute median TP and SL for this TF's SFP signals (train split only)
-        split_idx = int(len(feat_values) * 0.8)
-        train_sfp_mask = (actions[:split_idx] != 0)
-        median_tp = np.median(tp_labels[:split_idx][train_sfp_mask])
-        median_sl = np.median(sl_labels[:split_idx][train_sfp_mask])
-        print(f"  {tf} normalization — median TP: {median_tp*100:.2f}%, median SL: {median_sl*100:.2f}%")
+            # Align labels with dropped warmup
+            drop_n = 30
+            quality = quality[drop_n:]
+            tp_labels = tp_labels[drop_n:]
+            sl_labels = sl_labels[drop_n:]
 
-        # Normalize: all TFs now have TP/SL centered around ~1.0
-        tp_labels = tp_labels / (median_tp + 1e-8)
-        sl_labels = sl_labels / (median_sl + 1e-8)
+            feat_values = feat.values.astype(np.float32)
+            sfp_mask = actions != 0
+            total_sfp = int(np.sum(sfp_mask))
+            n_profitable = int(np.sum(quality[sfp_mask] == 1))
+            print(f"  {asset_name}/{tf}: {len(feat_values)} bars, {total_sfp} SFPs, {n_profitable} profitable ({n_profitable/total_sfp*100:.0f}%)")
 
-        # Split each timeframe 80/20 individually (time-based)
-        train_feats.append(feat_values[:split_idx])
-        train_actions.append(actions[:split_idx])
-        train_quality.append(quality[:split_idx])
-        train_tp.append(tp_labels[:split_idx])
-        train_sl.append(sl_labels[:split_idx])
-        test_feats.append(feat_values[split_idx:])
-        test_actions.append(actions[split_idx:])
-        test_quality.append(quality[split_idx:])
-        test_tp.append(tp_labels[split_idx:])
-        test_sl.append(sl_labels[split_idx:])
+            # Normalize TP/SL per asset per timeframe
+            split_idx = int(len(feat_values) * 0.8)
+            train_sfp_mask = (actions[:split_idx] != 0)
+            median_tp = np.median(tp_labels[:split_idx][train_sfp_mask])
+            median_sl = np.median(sl_labels[:split_idx][train_sfp_mask])
+            print(f"  {asset_name}/{tf} normalization — median TP: {median_tp*100:.2f}%, median SL: {median_sl*100:.2f}%")
+
+            # Normalize: all TFs/assets now have TP/SL centered around ~1.0
+            tp_labels = tp_labels / (median_tp + 1e-8)
+            sl_labels = sl_labels / (median_sl + 1e-8)
+
+            # Split each asset/timeframe 80/20 individually (time-based)
+            train_feats.append(feat_values[:split_idx])
+            train_actions.append(actions[:split_idx])
+            train_quality.append(quality[:split_idx])
+            train_tp.append(tp_labels[:split_idx])
+            train_sl.append(sl_labels[:split_idx])
+            test_feats.append(feat_values[split_idx:])
+            test_actions.append(actions[split_idx:])
+            test_quality.append(quality[split_idx:])
+            test_tp.append(tp_labels[split_idx:])
+            test_sl.append(sl_labels[split_idx:])
 
     # Concatenate
     train_feat = np.concatenate(train_feats)
@@ -335,12 +373,20 @@ def evaluate(model, test_loader, criterion):
 def train():
     train_loader, test_loader, n_features = load_data_set()
     model = SFPTransformer(n_features=n_features).to(device)
+
+    if RESUME and os.path.exists(MODEL_FILE):
+        model.load_state_dict(torch.load(MODEL_FILE, map_location=device, weights_only=True))
+        print(f"Resumed from {MODEL_FILE}")
+    elif RESUME:
+        print(f"WARNING: --resume but {MODEL_FILE} not found, training from scratch")
+
     n_params = sum(p.numel() for p in model.parameters())
     print(f"SFPTransformer: {n_params:,} parameters")
+    resume_lr = 1e-4 if RESUME else 5e-4
     criterion = RankingRegLoss(margin=0.3, lambda_rank=2.0)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=5e-4, weight_decay=1e-2)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=resume_lr, weight_decay=1e-2)
     scheduler = torch.optim.lr_scheduler.OneCycleLR(
-        optimizer, max_lr=5e-4, epochs=100,
+        optimizer, max_lr=resume_lr, epochs=100,
         steps_per_epoch=len(train_loader),
     )
 

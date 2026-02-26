@@ -2,7 +2,14 @@
 
 import os
 
-SYMBOL = "BTCUSDT"
+ASSETS = {
+    "btc": {"symbol": "BTCUSDT", "asset_id": 1.0, "active": True},
+    "gold": {"symbol": "PAXGUSDT", "asset_id": 2.0, "active": True},
+    "silver": {"symbol": "XAGUSDT", "asset_id": 3.0, "active": False},
+    "sol": {"symbol": "SOLUSDT", "asset_id": 4.0, "active": True},
+    "eth": {"symbol": "ETHUSDT", "asset_id": 5.0, "active": True},
+}
+
 N_CANDLES = 500
 WINDOW = 30
 RATIO_THRESHOLD = 1.4

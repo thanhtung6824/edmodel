@@ -1,10 +1,16 @@
-"""Benchmark: log current model quality across all timeframes.
+"""Benchmark: log current model quality across all timeframes and assets.
 
 Run this before making changes to establish a baseline.
 Output saved to benchmark_results.txt
+
+Usage:
+    python benchmark.py                         # all assets with CSVs
+    python benchmark.py --assets btc gold silver # specific assets
 """
 
 import json
+import os
+import sys
 import numpy as np
 import pandas as pd
 import torch
@@ -25,6 +31,25 @@ WINDOW = 30
 TF_MAP = {"15min": 0.25, "1h": 1.0, "4h": 4.0}
 THRESHOLDS = [1.0, 1.2, 1.4, 1.6, 1.8, 2.0]
 
+ASSETS = {
+    "btc": {"prefix": "btc", "asset_id": 1.0, "symbol": "BTCUSDT"},
+    "gold": {"prefix": "gold", "asset_id": 2.0, "symbol": "XAUUSDT"},
+    "silver": {"prefix": "silver", "asset_id": 3.0, "symbol": "XAGUSDT"},
+    "sol": {"prefix": "sol", "asset_id": 4.0, "symbol": "SOLUSDT"},
+    "eth": {"prefix": "eth", "asset_id": 5.0, "symbol": "ETHUSDT"},
+}
+
+# Parse --assets flag
+args = sys.argv[1:]
+if "--assets" in args:
+    idx = args.index("--assets")
+    SELECTED_ASSETS = args[idx + 1:]
+else:
+    SELECTED_ASSETS = [
+        name for name, cfg in ASSETS.items()
+        if any(os.path.exists(f"data/{cfg['prefix']}_{tf}.csv") for tf in TF_MAP)
+    ]
+
 output_lines = []
 
 
@@ -33,7 +58,7 @@ def log(msg=""):
     output_lines.append(msg)
 
 
-def run_sfp_pipeline(df, tf_hours):
+def run_sfp_pipeline(df, tf_hours, asset_id=1.0):
     highs = df["High"].values
     lows = df["Low"].values
     closes = df["Close"].values
@@ -41,7 +66,7 @@ def run_sfp_pipeline(df, tf_hours):
     actions, swept_levels = run_sfp_detection(df)
     quality, tp_labels, sl_labels = compute_tp_sl_labels(highs, lows, closes, actions, swept_levels, horizon=HORIZON)
 
-    feat_values, actions_trimmed = build_feat_shared(df, actions, tf_hours)
+    feat_values, actions_trimmed = build_feat_shared(df, actions, tf_hours, asset_id=asset_id)
 
     drop_n = 30
     quality = quality[drop_n:]
@@ -70,22 +95,24 @@ def predict_all(feat_values, model):
     return all_indices, np.array(all_tp), np.array(all_sl)
 
 
-def benchmark_tf(tf, tf_hours, model):
-    data_file = f"data/btc_{tf}.csv"
+def benchmark_tf(tf, tf_hours, model, asset_name="btc", asset_id=1.0):
+    prefix = ASSETS[asset_name]["prefix"]
+    data_file = f"data/{prefix}_{tf}.csv"
+    if not os.path.exists(data_file):
+        log(f"\n  SKIPPED {asset_name}/{tf}: {data_file} not found")
+        return None
     log(f"\n{'='*80}")
-    log(f"  BENCHMARK: {tf} BTC (from {CUTOFF})")
+    log(f"  BENCHMARK: {tf} {asset_name.upper()} (from {CUTOFF})")
     log(f"{'='*80}")
 
     df = pd.read_csv(data_file)
     df["timestamp"] = pd.to_datetime(df["timestamp"])
     before = len(df)
     df = df[df["timestamp"] >= CUTOFF].reset_index(drop=True)
-    # Set tf_hours feature
-    feat_col_idx = 21  # tf_hours is column 21
     log(f"  Data: {len(df)} bars (filtered from {before})")
     log(f"  Range: {df['timestamp'].iloc[0]} to {df['timestamp'].iloc[-1]}")
 
-    feat_values, actions, quality, tp_labels, sl_labels, swept_levels, timestamps = run_sfp_pipeline(df, tf_hours)
+    feat_values, actions, quality, tp_labels, sl_labels, swept_levels, timestamps = run_sfp_pipeline(df, tf_hours, asset_id=asset_id)
 
     total_sfp = int(np.sum(actions != 0))
     n_prof = int(np.sum((actions != 0) & (quality == 1)))
@@ -152,6 +179,7 @@ def benchmark_tf(tf, tf_hours, model):
 def main():
     log(f"SFP Transformer Benchmark — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     log(f"Model: {MODEL_FILE}")
+    log(f"Assets: {SELECTED_ASSETS}")
     log(f"Cutoff: {CUTOFF} | Horizon: {HORIZON} | Window: {WINDOW}")
 
     model = SFPTransformer(n_features=22)
@@ -160,35 +188,45 @@ def main():
     log("Model loaded")
 
     all_results = {}
-    for tf, tf_hours in TF_MAP.items():
-        try:
-            all_results[tf] = benchmark_tf(tf, tf_hours, model)
-        except Exception as e:
-            log(f"\n  SKIPPED {tf}: {e}")
+    for asset_name in SELECTED_ASSETS:
+        asset_cfg = ASSETS[asset_name]
+        asset_id = asset_cfg["asset_id"]
+        all_results[asset_name] = {}
+        for tf, tf_hours in TF_MAP.items():
+            try:
+                result = benchmark_tf(tf, tf_hours, model, asset_name=asset_name, asset_id=asset_id)
+                if result is not None:
+                    all_results[asset_name][tf] = result
+            except Exception as e:
+                log(f"\n  SKIPPED {asset_name}/{tf}: {e}")
 
     # Summary
     log(f"\n{'='*80}")
     log(f"  SUMMARY (ratio > 1.4)")
     log(f"{'='*80}")
-    log(f"  {'TF':>6} | {'Trades':>6} | {'WinRate':>7} | {'R:R':>5} | {'EV/trade':>8}")
-    log(f"  {'-'*45}")
-    for tf in TF_MAP:
-        if tf in all_results and 1.4 in all_results[tf]:
-            r = all_results[tf][1.4]
-            log(f"  {tf:>6} | {r['trades']:>6} | {r['win_rate']:>6.0f}% | {r['rr']:>5.2f} | {r['ev']:>+7.3f}%")
+    log(f"  {'Asset':>6} {'TF':>6} | {'Trades':>6} | {'WinRate':>7} | {'R:R':>5} | {'EV/trade':>8}")
+    log(f"  {'-'*55}")
+    for asset_name in SELECTED_ASSETS:
+        for tf in TF_MAP:
+            if tf in all_results.get(asset_name, {}) and 1.4 in all_results[asset_name][tf]:
+                r = all_results[asset_name][tf][1.4]
+                log(f"  {asset_name:>6} {tf:>6} | {r['trades']:>6} | {r['win_rate']:>6.0f}% | {r['rr']:>5.2f} | {r['ev']:>+7.3f}%")
 
-    # Save
-    out_file = "benchmark_results.txt"
+    # Save to benchmark/ directory
+    os.makedirs("benchmark", exist_ok=True)
+    tag = "_".join(SELECTED_ASSETS)
+    out_file = f"benchmark/{tag}_results.txt"
     with open(out_file, "w") as f:
         f.write("\n".join(output_lines))
     log(f"\nSaved to {out_file}")
 
     # Also save machine-readable JSON
-    json_file = "benchmark_results.json"
+    json_file = f"benchmark/{tag}_results.json"
     with open(json_file, "w") as f:
         json.dump({
             "timestamp": datetime.now().isoformat(),
             "model": MODEL_FILE,
+            "assets": SELECTED_ASSETS,
             "cutoff": CUTOFF,
             "horizon": HORIZON,
             "window": WINDOW,

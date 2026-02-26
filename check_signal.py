@@ -1,6 +1,13 @@
-"""Quick check: run model on recent_data.json — show ALL signals."""
+"""Quick check: run model on recent_data.json — show ALL signals.
+
+Usage:
+    python check_signal.py                  # default: btc (asset_id=1.0)
+    python check_signal.py --asset gold     # gold (asset_id=2.0)
+    python check_signal.py --asset silver   # silver (asset_id=3.0)
+"""
 
 import json
+import sys
 import numpy as np
 import pandas as pd
 import torch
@@ -8,6 +15,22 @@ from sklearn.preprocessing import StandardScaler
 from ta import volume, volatility, trend, momentum
 from server.pipeline import run_sfp_detection, build_features
 from server.inference import load_model
+
+ASSETS = {
+    "btc": 1.0,
+    "gold": 2.0,
+    "silver": 3.0,
+    "sol": 4.0,
+    "eth": 5.0,
+}
+
+args = sys.argv[1:]
+if "--asset" in args:
+    idx = args.index("--asset")
+    asset_name = args[idx + 1]
+else:
+    asset_name = "btc"
+asset_id = ASSETS.get(asset_name, 1.0)
 
 WINDOW = 30
 THRESHOLD = 1.4
@@ -38,7 +61,7 @@ print(f"Range: {df['timestamp'].iloc[0]} to {df['timestamp'].iloc[-1]}")
 print()
 
 actions, swept_levels = run_sfp_detection(df)
-feat_values, actions_trimmed = build_features(df, actions, tf_hours=4.0)
+feat_values, actions_trimmed = build_features(df, actions, tf_hours=4.0, asset_id=asset_id)
 
 # Align swept_levels with trimmed actions
 drop_n = 30

@@ -13,6 +13,7 @@ from fastapi.responses import HTMLResponse
 
 from server.binance import fetch_candles
 from server.config import (
+    ASSETS,
     HISTORY_FILES,
     LIVE_SIGNALS_PATH,
     MODEL_PATH,
@@ -20,7 +21,6 @@ from server.config import (
     RATIO_THRESHOLD,
     SIGNAL_EXPIRY_BARS,
     SIGNAL_HORIZON,
-    SYMBOL,
     TIMEFRAMES,
 )
 from server.inference import load_model, predict_latest
@@ -57,11 +57,12 @@ def _save_live_signals():
     Path(LIVE_SIGNALS_PATH).write_text(json.dumps(live_signals, indent=2))
 
 
-def _resolve_open_signals(tf_key: str, candles: list[dict]):
+def _resolve_open_signals(job_key: str, candles: list[dict]):
     """Check open live signals against candle data to determine win/loss."""
     changed = False
     for sig in live_signals:
-        if sig["timeframe"] != tf_key or sig["status"] != "open":
+        sig_key = f"{sig.get('asset', 'btc')}_{sig['timeframe']}"
+        if sig_key != job_key or sig["status"] != "open":
             continue
 
         entry = sig["entry"]
@@ -121,14 +122,18 @@ def _resolve_open_signals(tf_key: str, candles: list[dict]):
         _save_live_signals()
 
 
-async def run_job(tf_key: str):
+async def run_job(asset_key: str, tf_key: str):
     """Scheduled job: fetch candles, run pipeline, store signal if hit."""
+    asset_cfg = ASSETS[asset_key]
+    symbol = asset_cfg["symbol"]
+    asset_id = asset_cfg["asset_id"]
     cfg = TIMEFRAMES[tf_key]
-    logger.info(f"[{tf_key}] Job started")
+    job_key = f"{asset_key}_{tf_key}"
+    logger.info(f"[{job_key}] Job started ({symbol})")
 
     try:
-        df = await fetch_candles(SYMBOL, cfg["interval"], limit=N_CANDLES)
-        logger.info(f"[{tf_key}] Fetched {len(df)} candles")
+        df = await fetch_candles(symbol, cfg["interval"], limit=N_CANDLES)
+        logger.info(f"[{job_key}] Fetched {len(df)} candles")
 
         # Store candle data for chart endpoint
         candles = [
@@ -141,19 +146,19 @@ async def run_job(tf_key: str):
             }
             for _, row in df.iterrows()
         ]
-        candle_store[tf_key] = candles
+        candle_store[job_key] = candles
 
         # Resolve any open live signals
-        _resolve_open_signals(tf_key, candles)
+        _resolve_open_signals(job_key, candles)
 
         actions, swept_levels = run_sfp_detection(df)
-        feat_values, actions_trimmed = build_features(df, actions, cfg["tf_hours"])
-        logger.info(f"[{tf_key}] Pipeline done — {int((actions_trimmed != 0).sum())} SFPs detected")
+        feat_values, actions_trimmed = build_features(df, actions, cfg["tf_hours"], asset_id=asset_id)
+        logger.info(f"[{job_key}] Pipeline done — {int((actions_trimmed != 0).sum())} SFPs detected")
 
         result = predict_latest(model, feat_values)
         if result is None:
-            logger.warning(f"[{tf_key}] Not enough data for prediction")
-            last_run[tf_key] = datetime.now(timezone.utc).isoformat()
+            logger.warning(f"[{job_key}] Not enough data for prediction")
+            last_run[job_key] = datetime.now(timezone.utc).isoformat()
             return
 
         tp, sl, ratio = result
@@ -161,7 +166,7 @@ async def run_job(tf_key: str):
         last_swept = float(swept_levels[len(swept_levels) - len(actions_trimmed) + len(actions_trimmed) - 1])
 
         logger.info(
-            f"[{tf_key}] Latest bar — action={last_action}, "
+            f"[{job_key}] Latest bar — action={last_action}, "
             f"tp={tp:.4f}, sl={sl:.4f}, ratio={ratio:.2f}"
         )
 
@@ -175,9 +180,10 @@ async def run_job(tf_key: str):
 
             signal = {
                 "timeframe": tf_key,
+                "asset": asset_key,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "time": candles[-1]["time"],
-                "symbol": SYMBOL,
+                "symbol": symbol,
                 "direction": direction,
                 "entry": round(entry, 2),
                 "tp_pct": round(tp * 100, 2),
@@ -193,30 +199,31 @@ async def run_job(tf_key: str):
             active_signals.append(signal)
             live_signals.append(signal)
             _save_live_signals()
-            logger.info(f"[{tf_key}] SIGNAL: {direction} @ {entry:.2f} (ratio={ratio:.2f})")
+            logger.info(f"[{job_key}] SIGNAL: {direction} @ {entry:.2f} (ratio={ratio:.2f})")
 
             await send_signal_alert(signal)
 
-        # Expire old active signals for this timeframe
-        _expire_active_signals(tf_key)
+        # Expire old active signals for this timeframe/asset
+        _expire_active_signals(job_key)
 
-        last_run[tf_key] = datetime.now(timezone.utc).isoformat()
+        last_run[job_key] = datetime.now(timezone.utc).isoformat()
 
     except Exception:
-        logger.exception(f"[{tf_key}] Job failed")
+        logger.exception(f"[{job_key}] Job failed")
 
 
-def _expire_active_signals(tf_key: str):
+def _expire_active_signals(job_key: str):
     """Decrement bars_remaining for active signals, remove expired from active list."""
     to_remove = []
     for sig in active_signals:
-        if sig["timeframe"] == tf_key:
+        sig_key = f"{sig.get('asset', 'btc')}_{sig['timeframe']}"
+        if sig_key == job_key:
             sig["bars_remaining"] -= 1
             if sig["bars_remaining"] <= 0:
                 to_remove.append(sig)
     for sig in to_remove:
         active_signals.remove(sig)
-        logger.info(f"[{tf_key}] Expired active signal: {sig['direction']} @ {sig['entry']}")
+        logger.info(f"[{job_key}] Expired active signal: {sig['direction']} @ {sig['entry']}")
 
 
 @asynccontextmanager
@@ -230,16 +237,20 @@ async def lifespan(app: FastAPI):
     model = load_model(MODEL_PATH)
     logger.info("Model loaded")
 
-    for tf_key, cfg in TIMEFRAMES.items():
-        trigger = CronTrigger(**cfg["cron"], timezone=timezone.utc)
-        scheduler.add_job(run_job, trigger, args=[tf_key], id=tf_key, name=f"sfp_{tf_key}")
-        logger.info(f"Scheduled {tf_key} job: {cfg['cron']}")
+    active_assets = {k: v for k, v in ASSETS.items() if v.get("active", True)}
+    for asset_key in active_assets:
+        for tf_key, cfg in TIMEFRAMES.items():
+            job_id = f"{asset_key}_{tf_key}"
+            trigger = CronTrigger(**cfg["cron"], timezone=timezone.utc)
+            scheduler.add_job(run_job, trigger, args=[asset_key, tf_key], id=job_id, name=f"sfp_{job_id}")
+            logger.info(f"Scheduled {job_id} job: {cfg['cron']}")
 
     scheduler.start()
-    logger.info("Scheduler started")
+    logger.info("Scheduler started — %d jobs (%d assets × %d TFs)", len(active_assets) * len(TIMEFRAMES), len(active_assets), len(TIMEFRAMES))
 
-    for tf_key in TIMEFRAMES:
-        await run_job(tf_key)
+    for asset_key in active_assets:
+        for tf_key in TIMEFRAMES:
+            await run_job(asset_key, tf_key)
 
     yield
 
@@ -297,11 +308,12 @@ async def get_history(tf: str):
     return {"signals": data.get("signals", [])}
 
 
-@app.get("/candles/{tf}")
-async def get_candles(tf: str):
-    if tf not in candle_store:
-        return {"candles": [], "error": f"No data for {tf}"}
-    return {"candles": candle_store[tf]}
+@app.get("/candles/{asset}/{tf}")
+async def get_candles(asset: str, tf: str):
+    key = f"{asset}_{tf}"
+    if key not in candle_store:
+        return {"candles": [], "error": f"No data for {key}"}
+    return {"candles": candle_store[key]}
 
 
 @app.get("/health")
@@ -349,6 +361,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .tf-btn { padding: 5px 14px; border: 1px solid #30363d; border-radius: 6px; background: transparent; color: #8b949e; cursor: pointer; font-size: 13px; font-weight: 600; transition: all .15s; }
   .tf-btn:hover { border-color: #58a6ff; color: #c9d1d9; }
   .tf-btn.active { background: #1f6feb; border-color: #1f6feb; color: #fff; }
+  .asset-btn { padding: 5px 14px; border: 1px solid #30363d; border-radius: 6px; background: transparent; color: #8b949e; cursor: pointer; font-size: 13px; font-weight: 600; transition: all .15s; }
+  .asset-btn:hover { border-color: #d29922; color: #c9d1d9; }
+  .asset-btn.active { background: #6e4600; border-color: #d29922; color: #fff; }
   .tf-toggle { margin-left: 16px; display: flex; gap: 4px; align-items: center; }
   .tf-toggle label { font-size: 12px; color: #8b949e; cursor: pointer; user-select: none; }
   .tf-toggle input { cursor: pointer; }
@@ -395,6 +410,12 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <div class="main">
   <div class="chart-panel">
     <div class="tf-bar">
+      <button class="asset-btn active" data-asset="btc">BTC</button>
+      <button class="asset-btn" data-asset="eth">ETH</button>
+      <button class="asset-btn" data-asset="sol">SOL</button>
+      <button class="asset-btn" data-asset="gold">Gold</button>
+      <button class="asset-btn" data-asset="silver">Silver</button>
+      <span style="color:#30363d; margin:0 8px;">|</span>
       <button class="tf-btn active" data-tf="15m">15m</button>
       <button class="tf-btn" data-tf="1h">1h</button>
       <button class="tf-btn" data-tf="4h">4h</button>
@@ -444,6 +465,7 @@ const candleSeries = chart.addCandlestickSeries({
 });
 
 let signalLines = [];
+let currentAsset = 'btc';
 let currentTf = '15m';
 let cachedActive = [];
 let cachedHistory = {};
@@ -477,15 +499,15 @@ function drawActiveSignalLines(sigs, tf) {
   });
 }
 
-function buildMarkers(tf) {
+function buildMarkers(asset, tf) {
   const markers = [];
   const showHist = document.getElementById('showHistory').checked;
   // Only show markers within candle range
   const candles = candleSeries.data ? candleSeries.data() : [];
   const minTime = candles.length > 0 ? candles[0].time : 0;
 
-  // Past backtest signals
-  if (showHist && cachedHistory[tf]) {
+  // Past backtest signals (only for btc — history files are btc-only)
+  if (showHist && asset === 'btc' && cachedHistory[tf]) {
     cachedHistory[tf].forEach(s => {
       const t = Math.floor(s.time_ms / 1000);
       if (t < minTime) return;
@@ -502,7 +524,8 @@ function buildMarkers(tf) {
 
   // Live signals
   cachedLive.forEach(s => {
-    if (s.timeframe !== tf || !s.time || s.time < minTime) return;
+    const sigAsset = s.asset || 'btc';
+    if (sigAsset !== asset || s.timeframe !== tf || !s.time || s.time < minTime) return;
     const isLong = s.direction === 'LONG';
     markers.push({
       time: s.time,
@@ -517,23 +540,32 @@ function buildMarkers(tf) {
   return markers;
 }
 
+// Asset buttons
+document.querySelectorAll('.asset-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.asset-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    currentAsset = btn.dataset.asset;
+    loadChart(currentAsset, currentTf);
+  });
+});
 // TF buttons
 document.querySelectorAll('.tf-btn').forEach(btn => {
   btn.addEventListener('click', () => {
     document.querySelectorAll('.tf-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     currentTf = btn.dataset.tf;
-    loadChart(currentTf);
+    loadChart(currentAsset, currentTf);
   });
 });
 document.getElementById('showHistory').addEventListener('change', () => {
-  candleSeries.setMarkers(buildMarkers(currentTf));
+  candleSeries.setMarkers(buildMarkers(currentAsset, currentTf));
 });
 
-async function loadChart(tf) {
+async function loadChart(asset, tf) {
   try {
     const [candleRes, histRes] = await Promise.all([
-      fetch('/candles/' + tf),
+      fetch('/candles/' + asset + '/' + tf),
       cachedHistory[tf] ? Promise.resolve(null) : fetch('/signals/history/' + tf),
     ]);
     const candleData = await candleRes.json();
@@ -543,7 +575,7 @@ async function loadChart(tf) {
     }
     if (candleData.candles && candleData.candles.length > 0) {
       candleSeries.setData(candleData.candles);
-      candleSeries.setMarkers(buildMarkers(tf));
+      candleSeries.setMarkers(buildMarkers(asset, tf));
       chart.timeScale().fitContent();
       drawActiveSignalLines(cachedActive, tf);
     }
@@ -556,9 +588,10 @@ function renderSignalCard(s, showStatus) {
   const statusText = s.status === 'open' ? s.bars_remaining + ' bars'
     : s.status === 'win' ? 'WIN +' + (s.actual_r || 0) + 'R'
     : 'LOSS ' + (s.actual_r || 0) + 'R';
+  const assetLabel = (s.asset || 'btc').toUpperCase();
   return '<div class="signal-card ' + cls + '">' +
     '<div class="sig-header">' +
-      '<span class="sig-dir ' + cls + '">' + s.direction + ' · ' + s.timeframe + '</span>' +
+      '<span class="sig-dir ' + cls + '">' + s.direction + ' · ' + assetLabel + ' ' + s.timeframe + '</span>' +
       '<span class="sig-badge ' + statusCls + '">' + statusText + '</span>' +
     '</div>' +
     '<div class="sig-meta">' + (s.timestamp || '').replace('T', ' ').split('.')[0] + ' UTC</div>' +
@@ -584,7 +617,7 @@ async function refreshData() {
     const stats = liveData.stats;
 
     drawActiveSignalLines(cachedActive, currentTf);
-    candleSeries.setMarkers(buildMarkers(currentTf));
+    candleSeries.setMarkers(buildMarkers(currentAsset, currentTf));
 
     // Stats
     document.getElementById('st-total').textContent = stats.resolved + ' / ' + stats.total;
@@ -622,10 +655,10 @@ async function refreshData() {
 
 new ResizeObserver(() => chart.applyOptions({ width: container.clientWidth, height: container.clientHeight })).observe(container);
 
-loadChart(currentTf);
+loadChart(currentAsset, currentTf);
 refreshData();
 setInterval(refreshData, 15000);
-setInterval(() => loadChart(currentTf), 60000);
+setInterval(() => loadChart(currentAsset, currentTf), 60000);
 </script>
 </body>
 </html>"""

@@ -1,8 +1,15 @@
 btcusd_1-min_data.csv
-data/btc_data.csv
+data/*_data.csv
 data/btc_*.csv
+data/eth_*.csv
+data/gold_*.csv
+data/silver_*.csv
+data/sol_*.csv
 __pycache__/
 best_model.pth
 best_model_reg.pth
 signals_*.pine
 recent_data.json
+XAU_data.csv
+ethusd_1min_ohlc.csv
+sol_15m_data_2020_to_2025.csv
