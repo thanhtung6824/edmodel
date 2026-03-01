@@ -1,0 +1,110 @@
+{
+  "timestamp": "2026-02-26T12:17:27.159604",
+  "model": "best_model_transformer.pth",
+  "assets": [
+    "gold"
+  ],
+  "cutoff": "2024-01-01",
+  "horizon": 18,
+  "window": 30,
+  "results": {
+    "gold": {
+      "15min": {
+        "1.0": {
+          "trades": 38,
+          "wins": 21,
+          "win_rate": 55.3,
+          "avg_tp": 0.75,
+          "avg_sl": 0.55,
+          "rr": 1.36,
+          "ev": 0.167
+        },
+        "1.2": {
+          "trades": 9,
+          "wins": 7,
+          "win_rate": 77.8,
+          "avg_tp": 1.12,
+          "avg_sl": 0.35,
+          "rr": 3.23,
+          "ev": 0.791
+        }
+      },
+      "1h": {
+        "1.0": {
+          "trades": 102,
+          "wins": 53,
+          "win_rate": 52.0,
+          "avg_tp": 0.88,
+          "avg_sl": 0.54,
+          "rr": 1.62,
+          "ev": 0.197
+        },
+        "1.2": {
+          "trades": 59,
+          "wins": 34,
+          "win_rate": 57.6,
+          "avg_tp": 0.96,
+          "avg_sl": 0.41,
+          "rr": 2.35,
+          "ev": 0.379
+        },
+        "1.4": {
+          "trades": 17,
+          "wins": 12,
+          "win_rate": 70.6,
+          "avg_tp": 1.09,
+          "avg_sl": 0.21,
+          "rr": 5.26,
+          "ev": 0.707
+        },
+        "1.6": {
+          "trades": 3,
+          "wins": 2,
+          "win_rate": 66.7,
+          "avg_tp": 1.43,
+          "avg_sl": 0.22,
+          "rr": 6.56,
+          "ev": 0.878
+        }
+      },
+      "4h": {
+        "1.0": {
+          "trades": 112,
+          "wins": 55,
+          "win_rate": 49.1,
+          "avg_tp": 1.95,
+          "avg_sl": 0.93,
+          "rr": 2.1,
+          "ev": 0.486
+        },
+        "1.2": {
+          "trades": 60,
+          "wins": 33,
+          "win_rate": 55.0,
+          "avg_tp": 2.05,
+          "avg_sl": 0.8,
+          "rr": 2.55,
+          "ev": 0.765
+        },
+        "1.4": {
+          "trades": 15,
+          "wins": 7,
+          "win_rate": 46.7,
+          "avg_tp": 2.04,
+          "avg_sl": 1.14,
+          "rr": 1.79,
+          "ev": 0.345
+        },
+        "1.6": {
+          "trades": 1,
+          "wins": 0,
+          "win_rate": 0.0,
+          "avg_tp": 1.36,
+          "avg_sl": 0.46,
+          "rr": 2.96,
+          "ev": -0.459
+        }
+      }
+    }
+  }
+}

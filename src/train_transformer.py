@@ -60,28 +60,37 @@ TF_HOURS = {"15min": 0.25, "1h": 1.0, "4h": 4.0}
 print(f"Training on: {TIMEFRAMES} | Assets: {SELECTED_ASSETS} | Model: {MODEL_FILE}")
 
 class RankingRegLoss(nn.Module):
-    """Regression loss + margin ranking loss on predicted TP/SL ratio.
+    """Regression loss + margin ranking loss + direct ratio regression.
 
     The ranking term forces profitable SFPs to have higher predicted
     TP/SL ratios than losing SFPs, which pushes predictions apart
     instead of collapsing to the population mean.
+
+    The ratio regression term directly optimizes the predicted ratio
+    against the target ratio, forcing the model to jointly optimize
+    TP and SL rather than treating them independently.
     """
 
-    def __init__(self, margin=0.3, lambda_rank=1.0):
+    def __init__(self, margin=0.5, lambda_rank=2.0, lambda_ratio=1.0):
         super().__init__()
         self.margin = margin
         self.lambda_rank = lambda_rank
+        self.lambda_ratio = lambda_ratio
 
     def forward(self, tp_pred, sl_pred, tp_target, sl_target, quality=None):
         tp_loss = F.smooth_l1_loss(tp_pred, tp_target)
         sl_loss = F.smooth_l1_loss(sl_pred, sl_target)
         reg_loss = tp_loss + sl_loss
 
-        # Without quality labels, return regression only (used in eval)
-        if quality is None:
-            return reg_loss, tp_loss, sl_loss
-
+        # Direct ratio regression (always applied)
         ratio_pred = tp_pred / (sl_pred + 1e-6)
+        ratio_target = tp_target / (sl_target + 1e-6)
+        ratio_loss = F.smooth_l1_loss(ratio_pred, ratio_target)
+
+        # Without quality labels, return regression + ratio (used in eval)
+        if quality is None:
+            total = reg_loss + self.lambda_ratio * ratio_loss
+            return total, tp_loss, sl_loss
 
         prof_mask = quality == 1
         lose_mask = quality == 0
@@ -89,7 +98,8 @@ class RankingRegLoss(nn.Module):
         n_lose = lose_mask.sum()
 
         if n_prof == 0 or n_lose == 0:
-            return reg_loss, tp_loss, sl_loss
+            total = reg_loss + self.lambda_ratio * ratio_loss
+            return total, tp_loss, sl_loss
 
         prof_ratios = ratio_pred[prof_mask]  # (n_prof,)
         lose_ratios = ratio_pred[lose_mask]  # (n_lose,)
@@ -103,7 +113,7 @@ class RankingRegLoss(nn.Module):
             prof_exp, lose_exp, target, margin=self.margin
         )
 
-        total = reg_loss + self.lambda_rank * rank_loss
+        total = reg_loss + self.lambda_rank * rank_loss + self.lambda_ratio * ratio_loss
         return total, tp_loss, sl_loss
 
 def build_features(df, actions, tf_hours, asset_id=1.0):
@@ -343,7 +353,7 @@ def evaluate(model, test_loader, criterion):
     # Test TP/SL ratio as quality filter at different thresholds
     ratio = tp_preds / (sl_preds + 1e-6)
     results = {}
-    for thresh in [1.0, 1.5, 2.0, 3.0]:
+    for thresh in [1.0, 1.5, 2.0, 2.5, 3.0]:
         take = ratio > thresh
         n_take = take.sum().item()
         if n_take > 0:
@@ -382,8 +392,8 @@ def train():
 
     n_params = sum(p.numel() for p in model.parameters())
     print(f"SFPTransformer: {n_params:,} parameters")
-    resume_lr = 1e-4 if RESUME else 5e-4
-    criterion = RankingRegLoss(margin=0.3, lambda_rank=2.0)
+    resume_lr = 1e-4 if RESUME else 3e-4
+    criterion = RankingRegLoss(margin=0.5, lambda_rank=2.0, lambda_ratio=1.0)
     optimizer = torch.optim.AdamW(model.parameters(), lr=resume_lr, weight_decay=1e-2)
     scheduler = torch.optim.lr_scheduler.OneCycleLR(
         optimizer, max_lr=resume_lr, epochs=100,
@@ -441,18 +451,23 @@ def train():
                     f"Avg TP: {avg_tp:.2f} | Avg SL: {avg_sl:.2f}"
                 )
 
-        # --- Save best model by precision * R:R at ratio > 1.5 ---
-        n_trades, prec, rec, avg_tp, avg_sl = ratio_results.get(1.5, (0, 0, 0, 0, 0))
-        if n_trades >= min_trades and prec > 0 and avg_sl > 0:
-            rr = avg_tp / avg_sl
-            score = prec * rr  # precision weighted by R:R
-            if score > best_score:
-                best_score = score
-                torch.save(model.state_dict(), MODEL_FILE)
-                print(
-                    f"  -> Saved best model (score: {score:.1f}, "
-                    f"prec: {prec:.0f}%, R:R: {rr:.2f}, trades: {n_trades})"
-                )
+        # --- Save best model by multi-threshold score ---
+        # Reward signals at multiple thresholds (1.5, 2.0, 2.5) to encourage wider spread
+        score = 0.0
+        score_parts = []
+        for sel_thresh, weight in [(1.5, 1.0), (2.0, 2.0), (2.5, 3.0)]:
+            n_t, p, _, atp, asl = ratio_results.get(sel_thresh, (0, 0, 0, 0, 0))
+            if n_t >= 5 and p > 0 and asl > 0:
+                rr = atp / asl
+                score += weight * p * rr
+                score_parts.append(f">{sel_thresh}: {n_t}t/{p:.0f}%")
+        if score > best_score:
+            best_score = score
+            torch.save(model.state_dict(), MODEL_FILE)
+            print(
+                f"  -> Saved best model (score: {score:.1f}, "
+                f"{', '.join(score_parts) if score_parts else 'n/a'})"
+            )
 
         # --- Early stopping on test loss (still useful to stop divergence) ---
         if test_loss < best_loss:
@@ -460,7 +475,7 @@ def train():
             counter = 0
         else:
             counter += 1
-            if counter >= 20:
+            if counter >= 30:
                 print(f"\nEarly stopping at epoch {epoch + 1}")
                 break
 
