@@ -100,8 +100,7 @@ def detect_sfp(
     df_open,
     active_sh,
     active_sl,
-    min_sweep_pct=0.003,
-    max_sweep_pct=0.02,
+    max_sweep_pct=0.05,
     reclaim_window=1,
 ):
     """Detect Swing Failure Patterns (liquidity sweeps) with multi-candle reclaim.
@@ -109,7 +108,7 @@ def detect_sfp(
     Checks sweeps against ALL active swing levels (not just most recent).
     Filters:
       - Body position: open must be on correct side of swing level
-      - Sweep distance: 0.3% to 2%
+      - Sweep distance: up to 5% (reject extreme outliers)
 
     Bullish SFP: candle sweeps Low < swing_low, open > swing_low,
                  then reclaim Close > swing_low
@@ -129,8 +128,10 @@ def detect_sfp(
         for sl in active_sl[i]:
             if sl <= 0:
                 continue
+            if df_low[i] >= sl:
+                continue  # no sweep
             sweep_dist = (sl - df_low[i]) / sl
-            if sweep_dist < min_sweep_pct or sweep_dist > max_sweep_pct:
+            if sweep_dist > max_sweep_pct:
                 continue
             # Body position filter: open must be above swing low
             if df_open[i] <= sl:
@@ -147,8 +148,10 @@ def detect_sfp(
         for sh in active_sh[i]:
             if sh <= 0:
                 continue
+            if df_high[i] <= sh:
+                continue  # no sweep
             sweep_dist = (df_high[i] - sh) / sh
-            if sweep_dist < min_sweep_pct or sweep_dist > max_sweep_pct:
+            if sweep_dist > max_sweep_pct:
                 continue
             # Body position filter: open must be below swing high
             if df_open[i] >= sh:
