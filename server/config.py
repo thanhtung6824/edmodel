@@ -47,6 +47,24 @@ TIMEFRAMES = {
     },
 }
 
+# Median TP/SL from training data — used to denormalize model predictions.
+# Model outputs normalized values (1.0 = median). Multiply by these to get actual fractions.
+# Key format: (asset, tf_key)
+MEDIAN_TP_SL = {
+    ("btc", "15m"): (0.00824, 0.00463),
+    ("btc", "1h"):  (0.01682, 0.00987),
+    ("btc", "4h"):  (0.03512, 0.02176),
+    ("sol", "15m"): (0.01656, 0.01005),
+    ("sol", "1h"):  (0.03388, 0.02258),
+    ("sol", "4h"):  (0.06991, 0.04339),
+    ("eth", "15m"): (0.01077, 0.00627),
+    ("eth", "1h"):  (0.02289, 0.01373),
+    ("eth", "4h"):  (0.04750, 0.02684),
+    ("gold", "15m"): (0.00270, 0.00163),
+    ("gold", "1h"):  (0.00585, 0.00356),
+    ("gold", "4h"):  (0.01239, 0.00791),
+}
+
 # Telegram bot — set via environment variables
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")

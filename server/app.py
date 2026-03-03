@@ -19,6 +19,7 @@ from server.config import (
     ASSETS,
     HISTORY_FILES,
     LIVE_SIGNALS_PATH,
+    MEDIAN_TP_SL,
     MODEL_PATH,
     N_CANDLES,
     RATIO_THRESHOLD,
@@ -173,6 +174,9 @@ async def run_job(asset_key: str, tf_key: str):
         scaler = StandardScaler()
         scaled = scaler.fit_transform(feat_values)
 
+        # Denormalization: model outputs normalized TP/SL (1.0 = median)
+        median_tp, median_sl = MEDIAN_TP_SL.get((asset_key, tf_key), (0.01, 0.01))
+
         new_signals = 0
         for bar_idx in range(WINDOW - 1, n_trimmed):
             action = int(actions_trimmed[bar_idx])
@@ -190,12 +194,16 @@ async def run_job(asset_key: str, tf_key: str):
             x_t = torch.FloatTensor(x).unsqueeze(0)
             with torch.no_grad():
                 tp_pred, sl_pred = model(x_t)
-            tp = tp_pred.item()
-            sl = sl_pred.item()
-            ratio = tp / (sl + 1e-6)
+            tp_norm = tp_pred.item()
+            sl_norm = sl_pred.item()
+            ratio = tp_norm / (sl_norm + 1e-6)
 
             if ratio <= RATIO_THRESHOLD:
                 continue
+
+            # Denormalize: convert from normalized units back to actual fractions
+            tp = tp_norm * median_tp
+            sl = sl_norm * median_sl
 
             swept_orig_idx = len(swept_levels) - n_trimmed + bar_idx
             entry = float(swept_levels[swept_orig_idx])
