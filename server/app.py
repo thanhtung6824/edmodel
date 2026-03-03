@@ -6,6 +6,9 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
+import torch
+from sklearn.preprocessing import StandardScaler
+
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from fastapi import FastAPI
@@ -22,8 +25,9 @@ from server.config import (
     SIGNAL_EXPIRY_BARS,
     SIGNAL_HORIZON,
     TIMEFRAMES,
+    WINDOW,
 )
-from server.inference import load_model, predict_latest
+from server.inference import load_model, predict_bar, predict_latest
 from server.pipeline import build_features, run_sfp_detection
 from server.telegram import send_signal_alert
 
@@ -155,34 +159,61 @@ async def run_job(asset_key: str, tf_key: str):
         feat_values, actions_trimmed = build_features(df, actions, cfg["tf_hours"], asset_id=asset_id)
         logger.info(f"[{job_key}] Pipeline done — {int((actions_trimmed != 0).sum())} SFPs detected")
 
-        result = predict_latest(model, feat_values)
-        if result is None:
-            logger.warning(f"[{job_key}] Not enough data for prediction")
-            last_run[job_key] = datetime.now(timezone.utc).isoformat()
-            return
+        # Scan ALL SFP bars (same as check_signal.py), dedup by bar timestamp
+        drop_n = 30  # warmup bars dropped by build_features
+        n_trimmed = len(actions_trimmed)
 
-        tp, sl, ratio = result
-        last_action = int(actions_trimmed[-1])
-        last_swept = float(swept_levels[len(swept_levels) - len(actions_trimmed) + len(actions_trimmed) - 1])
+        # Build set of already-signaled bar times for fast dedup
+        signaled_times = {
+            s["time"]
+            for s in live_signals
+            if s.get("asset") == asset_key and s.get("timeframe") == tf_key
+        }
 
-        logger.info(
-            f"[{job_key}] Latest bar — action={last_action}, "
-            f"tp={tp:.4f}, sl={sl:.4f}, ratio={ratio:.2f}"
-        )
+        scaler = StandardScaler()
+        scaled = scaler.fit_transform(feat_values)
 
-        # Store signal if SFP detected and ratio passes threshold
-        if last_action != 0 and ratio > RATIO_THRESHOLD:
-            entry = last_swept
-            direction = "LONG" if last_action == 1 else "SHORT"
-            is_long = last_action == 1
+        new_signals = 0
+        for bar_idx in range(WINDOW - 1, n_trimmed):
+            action = int(actions_trimmed[bar_idx])
+            if action == 0:
+                continue
+
+            orig_idx = drop_n + bar_idx
+            bar_time = candles[orig_idx]["time"] if orig_idx < len(candles) else candles[-1]["time"]
+
+            if bar_time in signaled_times:
+                continue
+
+            # Run inference on this bar
+            x = scaled[bar_idx - WINDOW + 1: bar_idx + 1]
+            x_t = torch.FloatTensor(x).unsqueeze(0)
+            with torch.no_grad():
+                tp_pred, sl_pred = model(x_t)
+            tp = tp_pred.item()
+            sl = sl_pred.item()
+            ratio = tp / (sl + 1e-6)
+
+            if ratio <= RATIO_THRESHOLD:
+                continue
+
+            swept_orig_idx = len(swept_levels) - n_trimmed + bar_idx
+            entry = float(swept_levels[swept_orig_idx])
+
+            direction = "LONG" if action == 1 else "SHORT"
+            is_long = action == 1
             tp_price = entry * (1 + tp) if is_long else entry * (1 - tp)
             sl_price = entry * (1 - sl) if is_long else entry * (1 + sl)
+
+            # How many bars ago was this signal?
+            bars_ago = n_trimmed - 1 - bar_idx
+            remaining = max(SIGNAL_EXPIRY_BARS - bars_ago, 0)
 
             signal = {
                 "timeframe": tf_key,
                 "asset": asset_key,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
-                "time": candles[-1]["time"],
+                "time": bar_time,
                 "symbol": symbol,
                 "direction": direction,
                 "entry": round(entry, 2),
@@ -191,17 +222,24 @@ async def run_job(asset_key: str, tf_key: str):
                 "tp_price": round(tp_price, 2),
                 "sl_price": round(sl_price, 2),
                 "ratio": round(ratio, 4),
-                "bars_remaining": SIGNAL_EXPIRY_BARS,
+                "bars_remaining": remaining,
                 "status": "open",
                 "actual_r": None,
                 "resolved_at": None,
             }
             active_signals.append(signal)
             live_signals.append(signal)
-            _save_live_signals()
-            logger.info(f"[{job_key}] SIGNAL: {direction} @ {entry:.2f} (ratio={ratio:.2f})")
+            signaled_times.add(bar_time)
+            new_signals += 1
+            logger.info(f"[{job_key}] SIGNAL: {direction} @ {entry:.2f} (ratio={ratio:.2f}, bar -{bars_ago})")
 
-            await send_signal_alert(signal)
+            # Only send Telegram alert for recent signals (last 3 bars)
+            if bars_ago < SIGNAL_EXPIRY_BARS:
+                await send_signal_alert(signal)
+
+        if new_signals > 0:
+            _save_live_signals()
+            logger.info(f"[{job_key}] {new_signals} new signal(s) stored")
 
         # Expire old active signals for this timeframe/asset
         _expire_active_signals(job_key)

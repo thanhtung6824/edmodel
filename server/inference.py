@@ -43,3 +43,28 @@ def predict_latest(model: SFPTransformer, feat_values: np.ndarray, window: int =
     ratio = tp / (sl + 1e-6)
 
     return tp, sl, ratio
+
+
+def predict_bar(model: SFPTransformer, feat_values: np.ndarray, bar_idx: int, window: int = WINDOW):
+    """Run inference on a specific bar index.
+
+    Returns:
+        (tp, sl, ratio) for the bar, or None if not enough data.
+    """
+    if bar_idx < window - 1 or bar_idx >= len(feat_values):
+        return None
+
+    scaler = StandardScaler()
+    scaled = scaler.fit_transform(feat_values)
+
+    x = scaled[bar_idx - window + 1: bar_idx + 1]  # (30, 22)
+    x_t = torch.FloatTensor(x).unsqueeze(0)  # (1, 30, 22)
+
+    with torch.no_grad():
+        tp_pred, sl_pred = model(x_t)
+
+    tp = tp_pred.item()
+    sl = sl_pred.item()
+    ratio = tp / (sl + 1e-6)
+
+    return tp, sl, ratio
