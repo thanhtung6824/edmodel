@@ -36,14 +36,14 @@ TIMEFRAMES = {
     "1h": {
         "interval": "1h",
         "tf_hours": 1.0,
-        # Run at :01 past each hour
-        "cron": {"minute": "1"},
+        # Run every 15min to catch partial-candle SFPs early
+        "cron": {"minute": "1,16,31,46"},
     },
     "4h": {
         "interval": "4h",
         "tf_hours": 4.0,
-        # Run at 0:01, 4:01, 8:01, 12:01, 16:01, 20:01 UTC
-        "cron": {"hour": "0,4,8,12,16,20", "minute": "1"},
+        # Run every 15min to catch partial-candle SFPs early
+        "cron": {"minute": "1,16,31,46"},
     },
 }
 
@@ -67,4 +67,4 @@ MEDIAN_TP_SL = {
 
 # Telegram bot — set via environment variables
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+TELEGRAM_CHAT_ID = "-5242657435"

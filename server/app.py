@@ -46,6 +46,7 @@ candle_store: dict[str, list[dict]] = {}  # tf_key -> [{time, open, high, low, c
 model = None
 scheduler = AsyncIOScheduler(timezone=timezone.utc)
 last_run: dict[str, str] = {}
+last_bar_time: dict[str, int] = {}  # job_key -> latest candle timestamp
 
 
 def _load_live_signals():
@@ -250,7 +251,7 @@ async def run_job(asset_key: str, tf_key: str):
             logger.info(f"[{job_key}] {new_signals} new signal(s) stored")
 
         # Expire old active signals for this timeframe/asset
-        _expire_active_signals(job_key)
+        _expire_active_signals(job_key, candles[-1]["time"])
 
         last_run[job_key] = datetime.now(timezone.utc).isoformat()
 
@@ -258,8 +259,17 @@ async def run_job(asset_key: str, tf_key: str):
         logger.exception(f"[{job_key}] Job failed")
 
 
-def _expire_active_signals(job_key: str):
-    """Decrement bars_remaining for active signals, remove expired from active list."""
+def _expire_active_signals(job_key: str, current_bar_time: int):
+    """Decrement bars_remaining for active signals, remove expired from active list.
+
+    Only decrements when a new native-TF candle appears (bar_time changes),
+    so running 4h jobs every 15min doesn't expire signals 16× faster.
+    """
+    prev = last_bar_time.get(job_key)
+    last_bar_time[job_key] = current_bar_time
+    if prev is not None and current_bar_time == prev:
+        return  # Same candle — don't decrement
+
     to_remove = []
     for sig in active_signals:
         sig_key = f"{sig.get('asset', 'btc')}_{sig['timeframe']}"
