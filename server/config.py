@@ -16,6 +16,9 @@ RATIO_THRESHOLD = 1.4
 SIGNAL_EXPIRY_BARS = 3
 SIGNAL_HORIZON = 18  # bars to track outcome (matches backtest)
 MODEL_PATH = "best_model_transformer.pth"
+THREE_TAP_MODEL_PATH = "best_model_three_tap.pth"
+THREE_TAP_CONFIDENCE = 0.5  # P(win) threshold for three-tap classifier
+THREE_TAP_N_FEATURES = 18
 LIVE_SIGNALS_PATH = "signals_live.json"
 
 # Past signal files (from backtest validation)

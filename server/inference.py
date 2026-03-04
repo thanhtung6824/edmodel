@@ -5,7 +5,8 @@ import torch
 from sklearn.preprocessing import StandardScaler
 
 from src.models.sfp_transformer import SFPTransformer
-from server.config import WINDOW
+from src.models.three_tap_model import ThreeTapClassifier
+from server.config import WINDOW, THREE_TAP_N_FEATURES
 
 
 def load_model(path: str) -> SFPTransformer:
@@ -68,3 +69,33 @@ def predict_bar(model: SFPTransformer, feat_values: np.ndarray, bar_idx: int, wi
     ratio = tp / (sl + 1e-6)
 
     return tp, sl, ratio
+
+
+def load_three_tap_model(path: str) -> ThreeTapClassifier:
+    """Load trained ThreeTapClassifier model (CPU only for server)."""
+    model = ThreeTapClassifier(n_features=THREE_TAP_N_FEATURES, window=WINDOW, hidden=24)
+    model.load_state_dict(torch.load(path, map_location="cpu", weights_only=True))
+    model.eval()
+    return model
+
+
+def predict_three_tap_bar(
+    model: ThreeTapClassifier,
+    scaled_features: np.ndarray,
+    bar_idx: int,
+    window: int = WINDOW,
+) -> float | None:
+    """Run three-tap classifier on a specific bar.
+
+    Returns P(win) probability, or None if not enough data.
+    """
+    if bar_idx < window - 1 or bar_idx >= len(scaled_features):
+        return None
+
+    x = scaled_features[bar_idx - window + 1: bar_idx + 1]
+    x_t = torch.FloatTensor(x).unsqueeze(0)
+
+    with torch.no_grad():
+        logit = model(x_t)
+
+    return torch.sigmoid(logit).item()

@@ -1,4 +1,4 @@
-"""Telegram bot notifications for SFP signals."""
+"""Telegram bot notifications for trading signals."""
 
 import logging
 
@@ -15,24 +15,29 @@ async def send_signal_alert(signal: dict):
         logger.debug("Telegram not configured, skipping notification")
         return
 
+    strategy = signal.get("strategy", "SFP")
     direction = signal["direction"]
     emoji = "\U0001f7e2" if direction == "LONG" else "\U0001f534"
     entry = signal["entry"]
+    tp_price = signal["tp_price"]
+    sl_price = signal["sl_price"]
     tp_pct = signal["tp_pct"]
     sl_pct = signal["sl_pct"]
 
-    is_long = direction == "LONG"
-    tp_price = entry * (1 + tp_pct / 100) if is_long else entry * (1 - tp_pct / 100)
-    sl_price = entry * (1 - sl_pct / 100) if is_long else entry * (1 + sl_pct / 100)
+    if strategy == "3-Tap":
+        confidence = signal.get("confidence", 0)
+        quality_line = f"Confidence: <b>{confidence:.0%}</b>"
+    else:
+        quality_line = f"Ratio: <b>{signal['ratio']}</b>"
 
     text = (
-        f"{emoji} <b>SFP Signal — {signal['timeframe']} {signal['symbol']}</b>\n"
+        f"{emoji} <b>{strategy} Signal — {signal['timeframe']} {signal['symbol']}</b>\n"
         f"\n"
         f"Direction: <b>{direction}</b>\n"
         f"Entry: <code>${entry:,.2f}</code>\n"
         f"TP: <code>${tp_price:,.2f}</code> (+{tp_pct}%)\n"
         f"SL: <code>${sl_price:,.2f}</code> (-{sl_pct}%)\n"
-        f"Ratio: <b>{signal['ratio']}</b>\n"
+        f"{quality_line}\n"
         f"\n"
         f"Bars remaining: {signal['bars_remaining']}"
     )

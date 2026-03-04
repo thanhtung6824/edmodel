@@ -25,11 +25,18 @@ from server.config import (
     RATIO_THRESHOLD,
     SIGNAL_EXPIRY_BARS,
     SIGNAL_HORIZON,
+    THREE_TAP_CONFIDENCE,
+    THREE_TAP_MODEL_PATH,
     TIMEFRAMES,
     WINDOW,
 )
-from server.inference import load_model, predict_bar, predict_latest
-from server.pipeline import build_features, run_sfp_detection
+from server.inference import load_model, load_three_tap_model, predict_three_tap_bar
+from server.pipeline import (
+    build_features,
+    build_three_tap_features,
+    run_sfp_detection,
+    run_three_tap_detection,
+)
 from server.telegram import send_signal_alert
 
 logging.basicConfig(
@@ -43,7 +50,8 @@ logger = logging.getLogger(__name__)
 active_signals: list[dict] = []  # signals with bars_remaining > 0
 live_signals: list[dict] = []  # all live signals (persisted to JSON)
 candle_store: dict[str, list[dict]] = {}  # tf_key -> [{time, open, high, low, close}, ...]
-model = None
+sfp_model = None
+three_tap_model = None
 scheduler = AsyncIOScheduler(timezone=timezone.utc)
 last_run: dict[str, str] = {}
 last_bar_time: dict[str, int] = {}  # job_key -> latest candle timestamp
@@ -129,7 +137,7 @@ def _resolve_open_signals(job_key: str, candles: list[dict]):
 
 
 async def run_job(asset_key: str, tf_key: str):
-    """Scheduled job: fetch candles, run pipeline, store signal if hit."""
+    """Scheduled job: fetch candles, run both pipelines, store signals."""
     asset_cfg = ASSETS[asset_key]
     symbol = asset_cfg["symbol"]
     asset_id = asset_cfg["asset_id"]
@@ -157,102 +165,174 @@ async def run_job(asset_key: str, tf_key: str):
         # Resolve any open live signals
         _resolve_open_signals(job_key, candles)
 
-        actions, swept_levels = run_sfp_detection(df)
-        feat_values, actions_trimmed = build_features(df, actions, cfg["tf_hours"], asset_id=asset_id)
-        logger.info(f"[{job_key}] Pipeline done — {int((actions_trimmed != 0).sum())} SFPs detected")
-
-        # Scan ALL SFP bars (same as check_signal.py), dedup by bar timestamp
-        drop_n = 30  # warmup bars dropped by build_features
-        n_trimmed = len(actions_trimmed)
-
         # Build set of already-signaled bar times for fast dedup
         signaled_times = {
-            s["time"]
+            (s["time"], s.get("strategy", "SFP"))
             for s in live_signals
             if s.get("asset") == asset_key and s.get("timeframe") == tf_key
         }
 
-        scaler = StandardScaler()
-        scaled = scaler.fit_transform(feat_values)
-
-        # Denormalization: model outputs normalized TP/SL (1.0 = median)
-        median_tp, median_sl = MEDIAN_TP_SL.get((asset_key, tf_key), (0.01, 0.01))
-
+        drop_n = 30  # warmup bars dropped by build_features
         new_signals = 0
-        for bar_idx in range(WINDOW - 1, n_trimmed):
-            action = int(actions_trimmed[bar_idx])
-            if action == 0:
-                continue
 
-            orig_idx = drop_n + bar_idx
-            bar_time = candles[orig_idx]["time"] if orig_idx < len(candles) else candles[-1]["time"]
+        # ─── SFP Pipeline ────────────────────────────────────────
+        if sfp_model is not None:
+            actions, swept_levels = run_sfp_detection(df)
+            feat_values, actions_trimmed = build_features(df, actions, cfg["tf_hours"], asset_id=asset_id)
+            n_trimmed = len(actions_trimmed)
+            logger.info(f"[{job_key}] SFP: {int((actions_trimmed != 0).sum())} signals detected")
 
-            if bar_time in signaled_times:
-                continue
+            scaler = StandardScaler()
+            scaled = scaler.fit_transform(feat_values)
+            median_tp, median_sl = MEDIAN_TP_SL.get((asset_key, tf_key), (0.01, 0.01))
 
-            # Run inference on this bar
-            x = scaled[bar_idx - WINDOW + 1: bar_idx + 1]
-            x_t = torch.FloatTensor(x).unsqueeze(0)
-            with torch.no_grad():
-                tp_pred, sl_pred = model(x_t)
-            tp_norm = tp_pred.item()
-            sl_norm = sl_pred.item()
-            ratio = tp_norm / (sl_norm + 1e-6)
+            for bar_idx in range(WINDOW - 1, n_trimmed):
+                action = int(actions_trimmed[bar_idx])
+                if action == 0:
+                    continue
 
-            if ratio <= RATIO_THRESHOLD:
-                continue
+                orig_idx = drop_n + bar_idx
+                bar_time = candles[orig_idx]["time"] if orig_idx < len(candles) else candles[-1]["time"]
+                if (bar_time, "SFP") in signaled_times:
+                    continue
 
-            # Denormalize: convert from normalized units back to actual fractions
-            tp = tp_norm * median_tp
-            sl = sl_norm * median_sl
+                x = scaled[bar_idx - WINDOW + 1: bar_idx + 1]
+                x_t = torch.FloatTensor(x).unsqueeze(0)
+                with torch.no_grad():
+                    tp_pred, sl_pred = sfp_model(x_t)
+                tp_norm = tp_pred.item()
+                sl_norm = sl_pred.item()
+                ratio = tp_norm / (sl_norm + 1e-6)
 
-            swept_orig_idx = len(swept_levels) - n_trimmed + bar_idx
-            entry = float(swept_levels[swept_orig_idx])
+                if ratio <= RATIO_THRESHOLD:
+                    continue
 
-            direction = "LONG" if action == 1 else "SHORT"
-            is_long = action == 1
-            tp_price = entry * (1 + tp) if is_long else entry * (1 - tp)
-            sl_price = entry * (1 - sl) if is_long else entry * (1 + sl)
+                tp = tp_norm * median_tp
+                sl = sl_norm * median_sl
+                swept_orig_idx = len(swept_levels) - n_trimmed + bar_idx
+                entry = float(swept_levels[swept_orig_idx])
+                direction = "LONG" if action == 1 else "SHORT"
+                is_long = action == 1
+                tp_price = entry * (1 + tp) if is_long else entry * (1 - tp)
+                sl_price = entry * (1 - sl) if is_long else entry * (1 + sl)
 
-            # How many bars ago was this signal?
-            bars_ago = n_trimmed - 1 - bar_idx
-            remaining = max(SIGNAL_EXPIRY_BARS - bars_ago, 0)
+                bars_ago = n_trimmed - 1 - bar_idx
+                remaining = max(SIGNAL_EXPIRY_BARS - bars_ago, 0)
 
-            signal = {
-                "timeframe": tf_key,
-                "asset": asset_key,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "time": bar_time,
-                "symbol": symbol,
-                "direction": direction,
-                "entry": round(entry, 2),
-                "tp_pct": round(tp * 100, 2),
-                "sl_pct": round(sl * 100, 2),
-                "tp_price": round(tp_price, 2),
-                "sl_price": round(sl_price, 2),
-                "ratio": round(ratio, 4),
-                "bars_remaining": remaining,
-                "status": "open",
-                "actual_r": None,
-                "resolved_at": None,
-            }
-            active_signals.append(signal)
-            live_signals.append(signal)
-            signaled_times.add(bar_time)
-            new_signals += 1
-            logger.info(f"[{job_key}] SIGNAL: {direction} @ {entry:.2f} (ratio={ratio:.2f}, bar -{bars_ago})")
+                signal = {
+                    "strategy": "SFP",
+                    "timeframe": tf_key,
+                    "asset": asset_key,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "time": bar_time,
+                    "symbol": symbol,
+                    "direction": direction,
+                    "entry": round(entry, 2),
+                    "tp_pct": round(tp * 100, 2),
+                    "sl_pct": round(sl * 100, 2),
+                    "tp_price": round(tp_price, 2),
+                    "sl_price": round(sl_price, 2),
+                    "ratio": round(ratio, 4),
+                    "confidence": None,
+                    "bars_remaining": remaining,
+                    "status": "open",
+                    "actual_r": None,
+                    "resolved_at": None,
+                }
+                active_signals.append(signal)
+                live_signals.append(signal)
+                signaled_times.add((bar_time, "SFP"))
+                new_signals += 1
+                logger.info(f"[{job_key}] SFP SIGNAL: {direction} @ {entry:.2f} (ratio={ratio:.2f}, bar -{bars_ago})")
 
-            # Only send Telegram alert for recent signals (last 3 bars)
-            if bars_ago < SIGNAL_EXPIRY_BARS:
-                await send_signal_alert(signal)
+                if bars_ago < SIGNAL_EXPIRY_BARS:
+                    await send_signal_alert(signal)
 
+        # ─── Three-Tap Pipeline ───────────────────────────────────
+        if three_tap_model is not None:
+            tt_actions, tt_entry_levels, tt_signal_zones = run_three_tap_detection(df, tf_key)
+            tt_feat, tt_actions_trimmed, tt_zones_shifted = build_three_tap_features(
+                df, tt_actions, tt_signal_zones, cfg["tf_hours"], asset_id=asset_id,
+            )
+            n_tt = len(tt_actions_trimmed)
+            logger.info(f"[{job_key}] 3-Tap: {int((tt_actions_trimmed != 0).sum())} signals detected")
+
+            tt_scaler = StandardScaler()
+            tt_scaled = tt_scaler.fit_transform(tt_feat)
+
+            for bar_idx in range(WINDOW - 1, n_tt):
+                action = int(tt_actions_trimmed[bar_idx])
+                if action == 0:
+                    continue
+
+                orig_idx = drop_n + bar_idx
+                bar_time = candles[orig_idx]["time"] if orig_idx < len(candles) else candles[-1]["time"]
+                if (bar_time, "3-Tap") in signaled_times:
+                    continue
+
+                # Must have zone metadata for entry/SL/TP
+                if bar_idx not in tt_zones_shifted:
+                    continue
+
+                prob = predict_three_tap_bar(three_tap_model, tt_scaled, bar_idx)
+                if prob is None or prob < THREE_TAP_CONFIDENCE:
+                    continue
+
+                zone = tt_zones_shifted[bar_idx]
+                is_long = action == 1
+                direction = "LONG" if is_long else "SHORT"
+
+                # Structural levels from the setup geometry
+                entry = float(tt_entry_levels[orig_idx])
+                if is_long:
+                    sl_price = zone.bottom
+                    tp_price = zone.tp_target
+                else:
+                    sl_price = zone.top
+                    tp_price = zone.tp_target
+
+                tp_pct = abs(tp_price - entry) / (entry + 1e-8) * 100
+                sl_pct = abs(sl_price - entry) / (entry + 1e-8) * 100
+                ratio = tp_pct / (sl_pct + 1e-6)
+
+                bars_ago = n_tt - 1 - bar_idx
+                remaining = max(SIGNAL_EXPIRY_BARS - bars_ago, 0)
+
+                signal = {
+                    "strategy": "3-Tap",
+                    "timeframe": tf_key,
+                    "asset": asset_key,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "time": bar_time,
+                    "symbol": symbol,
+                    "direction": direction,
+                    "entry": round(entry, 2),
+                    "tp_pct": round(tp_pct, 2),
+                    "sl_pct": round(sl_pct, 2),
+                    "tp_price": round(tp_price, 2),
+                    "sl_price": round(sl_price, 2),
+                    "ratio": round(ratio, 4),
+                    "confidence": round(prob, 3),
+                    "bars_remaining": remaining,
+                    "status": "open",
+                    "actual_r": None,
+                    "resolved_at": None,
+                }
+                active_signals.append(signal)
+                live_signals.append(signal)
+                signaled_times.add((bar_time, "3-Tap"))
+                new_signals += 1
+                logger.info(f"[{job_key}] 3-TAP SIGNAL: {direction} @ {entry:.2f} (P={prob:.2f}, R:R={ratio:.2f}, bar -{bars_ago})")
+
+                if bars_ago < SIGNAL_EXPIRY_BARS:
+                    await send_signal_alert(signal)
+
+        # ─── Finalize ─────────────────────────────────────────────
         if new_signals > 0:
             _save_live_signals()
             logger.info(f"[{job_key}] {new_signals} new signal(s) stored")
 
-        # Expire old active signals for this timeframe/asset
         _expire_active_signals(job_key, candles[-1]["time"])
-
         last_run[job_key] = datetime.now(timezone.utc).isoformat()
 
     except Exception:
@@ -284,14 +364,24 @@ def _expire_active_signals(job_key: str, current_bar_time: int):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Load model on startup, start scheduler, run all jobs once."""
-    global model
+    """Load models on startup, start scheduler, run all jobs once."""
+    global sfp_model, three_tap_model
 
     _load_live_signals()
 
-    logger.info("Loading model from %s", MODEL_PATH)
-    model = load_model(MODEL_PATH)
-    logger.info("Model loaded")
+    if Path(MODEL_PATH).exists():
+        logger.info("Loading SFP model from %s", MODEL_PATH)
+        sfp_model = load_model(MODEL_PATH)
+        logger.info("SFP model loaded")
+    else:
+        logger.warning("SFP model not found at %s — SFP signals disabled", MODEL_PATH)
+
+    if Path(THREE_TAP_MODEL_PATH).exists():
+        logger.info("Loading Three-Tap model from %s", THREE_TAP_MODEL_PATH)
+        three_tap_model = load_three_tap_model(THREE_TAP_MODEL_PATH)
+        logger.info("Three-Tap model loaded")
+    else:
+        logger.warning("Three-Tap model not found at %s — 3-Tap signals disabled", THREE_TAP_MODEL_PATH)
 
     active_assets = {k: v for k, v in ASSETS.items() if v.get("active", True)}
     for asset_key in active_assets:
@@ -314,7 +404,7 @@ async def lifespan(app: FastAPI):
     logger.info("Scheduler shut down")
 
 
-app = FastAPI(title="SFP Signal Server", lifespan=lifespan)
+app = FastAPI(title="Edge Signal Server", lifespan=lifespan)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -384,7 +474,8 @@ async def health():
 
     return {
         "status": "ok",
-        "model_loaded": model is not None,
+        "sfp_model_loaded": sfp_model is not None,
+        "three_tap_model_loaded": three_tap_model is not None,
         "scheduled_jobs": jobs,
         "active_signals": len(active_signals),
         "live_stats": {
@@ -402,7 +493,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>SFP Signal Server</title>
+<title>Edge Signal Server</title>
 <script src="https://unpkg.com/lightweight-charts@4/dist/lightweight-charts.standalone.production.js"></script>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -460,7 +551,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 </head>
 <body>
 <div class="header">
-  <h1>SFP Signal Server</h1>
+  <h1>Edge Signal Server</h1>
   <div class="status" id="status"><span class="dot"></span>Loading...</div>
 </div>
 <div class="main">
@@ -645,9 +736,13 @@ function renderSignalCard(s, showStatus) {
     : s.status === 'win' ? 'WIN +' + (s.actual_r || 0) + 'R'
     : 'LOSS ' + (s.actual_r || 0) + 'R';
   const assetLabel = (s.asset || 'btc').toUpperCase();
+  const strategy = s.strategy || 'SFP';
+  const qualityText = strategy === '3-Tap'
+    ? 'Conf: ' + (s.confidence ? (s.confidence * 100).toFixed(0) + '%' : '-') + ' · R:R: ' + s.ratio
+    : 'Ratio: ' + s.ratio;
   return '<div class="signal-card ' + cls + '">' +
     '<div class="sig-header">' +
-      '<span class="sig-dir ' + cls + '">' + s.direction + ' · ' + assetLabel + ' ' + s.timeframe + '</span>' +
+      '<span class="sig-dir ' + cls + '">[' + strategy + '] ' + s.direction + ' · ' + assetLabel + ' ' + s.timeframe + '</span>' +
       '<span class="sig-badge ' + statusCls + '">' + statusText + '</span>' +
     '</div>' +
     '<div class="sig-meta">' + (s.timestamp || '').replace('T', ' ').split('.')[0] + ' UTC</div>' +
@@ -656,7 +751,7 @@ function renderSignalCard(s, showStatus) {
       '<div><div class="lbl">TP</div><div class="val tp">$' + (s.tp_price || 0).toLocaleString() + '</div></div>' +
       '<div><div class="lbl">SL</div><div class="val sl">$' + (s.sl_price || 0).toLocaleString() + '</div></div>' +
     '</div>' +
-    '<div class="sig-ratio">Ratio: ' + s.ratio + '</div>' +
+    '<div class="sig-ratio">' + qualityText + '</div>' +
   '</div>';
 }
 
