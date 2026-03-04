@@ -36,14 +36,14 @@ TIMEFRAMES = {
     "1h": {
         "interval": "1h",
         "tf_hours": 1.0,
-        # Run every 15min to catch partial-candle SFPs early
-        "cron": {"minute": "1,16,31,46"},
+        # Run every 10min to catch partial-candle SFPs early
+        "cron": {"minute": "1,11,21,31,41,51"},
     },
     "4h": {
         "interval": "4h",
         "tf_hours": 4.0,
-        # Run every 15min to catch partial-candle SFPs early
-        "cron": {"minute": "1,16,31,46"},
+        # Run every 10min to catch partial-candle SFPs early
+        "cron": {"minute": "1,11,21,31,41,51"},
     },
 }
 
