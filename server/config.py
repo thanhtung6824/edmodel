@@ -67,4 +67,4 @@ MEDIAN_TP_SL = {
 
 # Telegram bot — set via environment variables
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID = "-5242657435"
+TELEGRAM_CHAT_ID = "-1003745337450"
