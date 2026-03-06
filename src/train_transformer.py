@@ -19,6 +19,7 @@ from sklearn.preprocessing import StandardScaler
 from torch.utils.data import DataLoader
 
 from src.labels.sfp_labels import detect_swings, build_swing_level_series, compute_swing_level_info, generate_labels
+from src.labels.three_tap_labels import detect_ranges, compute_atr, RANGE_PARAMS
 from src.models.dataset import SFPDataset
 from src.models.sfp_transformer import SFPTransformer
 
@@ -57,37 +58,38 @@ MODEL_FILE = "best_model_transformer.pth"
 
 # Map timeframe string to hours for the context feature
 TF_HOURS = {"15min": 0.25, "1h": 1.0, "4h": 4.0}
+TF_KEYS = {"15min": "15m", "1h": "1h", "4h": "4h"}
 print(f"Training on: {TIMEFRAMES} | Assets: {SELECTED_ASSETS} | Model: {MODEL_FILE}")
 
-class RankingRegLoss(nn.Module):
-    """Regression loss + margin ranking loss + direct ratio regression.
+class TPFocusedLoss(nn.Module):
+    """TP-focused loss: SL is structural (known), so focus model capacity on TP.
 
-    The ranking term forces profitable SFPs to have higher predicted
-    TP/SL ratios than losing SFPs, which pushes predictions apart
-    instead of collapsing to the population mean.
-
-    The ratio regression term directly optimizes the predicted ratio
-    against the target ratio, forcing the model to jointly optimize
-    TP and SL rather than treating them independently.
+    - TP regression: main loss + asymmetric penalty for overestimating losers' TP
+    - SL regression: low weight (structural, easy to learn)
+    - R:R ratio: uses predicted_TP / SL_TARGET (not predicted SL)
+    - Ranking: pushes winners' predicted TP higher than losers'
     """
 
-    def __init__(self, margin=0.5, lambda_rank=2.0, lambda_ratio=1.0):
+    def __init__(self, margin=1.0, lambda_rank=3.0, lambda_ratio=1.0, sl_weight=0.5,
+                 lambda_overest=2.5, lambda_underest=1.0):
         super().__init__()
         self.margin = margin
         self.lambda_rank = lambda_rank
         self.lambda_ratio = lambda_ratio
+        self.sl_weight = sl_weight
+        self.lambda_overest = lambda_overest
+        self.lambda_underest = lambda_underest
 
     def forward(self, tp_pred, sl_pred, tp_target, sl_target, quality=None):
         tp_loss = F.smooth_l1_loss(tp_pred, tp_target)
         sl_loss = F.smooth_l1_loss(sl_pred, sl_target)
-        reg_loss = tp_loss + sl_loss
+        reg_loss = tp_loss + self.sl_weight * sl_loss
 
-        # Direct ratio regression (always applied)
-        ratio_pred = tp_pred / (sl_pred + 1e-6)
+        # R:R ratio uses SL TARGET (structural, known) — not predicted SL
+        ratio_pred = tp_pred / (sl_target + 1e-6)
         ratio_target = tp_target / (sl_target + 1e-6)
         ratio_loss = F.smooth_l1_loss(ratio_pred, ratio_target)
 
-        # Without quality labels, return regression + ratio (used in eval)
         if quality is None:
             total = reg_loss + self.lambda_ratio * ratio_loss
             return total, tp_loss, sl_loss
@@ -97,27 +99,41 @@ class RankingRegLoss(nn.Module):
         n_prof = prof_mask.sum()
         n_lose = lose_mask.sum()
 
+        # Asymmetric TP penalties — sharpen separation from BOTH sides:
+        # 1. Penalize overestimating losers' TP (prevent false positives)
+        # 2. Penalize underestimating winners' TP (preserve true positives)
+        asym_loss = torch.tensor(0.0, device=tp_pred.device)
+        if n_lose > 0:
+            tp_error_lose = tp_pred[lose_mask] - tp_target[lose_mask]
+            overest = torch.clamp(tp_error_lose, min=0)
+            asym_loss = asym_loss + self.lambda_overest * (overest ** 2).mean()
+        if n_prof > 0:
+            tp_error_prof = tp_target[prof_mask] - tp_pred[prof_mask]
+            underest = torch.clamp(tp_error_prof, min=0)
+            asym_loss = asym_loss + self.lambda_underest * (underest ** 2).mean()
+
         if n_prof == 0 or n_lose == 0:
-            total = reg_loss + self.lambda_ratio * ratio_loss
+            total = reg_loss + self.lambda_ratio * ratio_loss + asym_loss
             return total, tp_loss, sl_loss
 
-        prof_ratios = ratio_pred[prof_mask]  # (n_prof,)
-        lose_ratios = ratio_pred[lose_mask]  # (n_lose,)
+        # Rank by predicted_TP / known_SL — focus ranking on TP discrimination
+        prof_ratios = ratio_pred[prof_mask]
+        lose_ratios = ratio_pred[lose_mask]
 
-        # All pairs: each profitable should rank higher than each losing
         prof_exp = prof_ratios.unsqueeze(1).expand(n_prof, n_lose).reshape(-1)
         lose_exp = lose_ratios.unsqueeze(0).expand(n_prof, n_lose).reshape(-1)
-        target = torch.ones_like(prof_exp)  # +1 = first input should rank higher
+        target = torch.ones_like(prof_exp)
 
         rank_loss = F.margin_ranking_loss(
             prof_exp, lose_exp, target, margin=self.margin
         )
 
-        total = reg_loss + self.lambda_rank * rank_loss + self.lambda_ratio * ratio_loss
+        total = (reg_loss + self.lambda_rank * rank_loss
+                 + self.lambda_ratio * ratio_loss + asym_loss)
         return total, tp_loss, sl_loss
 
-def build_features(df, actions, tf_hours, asset_id=1.0):
-    """Build 22 features for one timeframe's data."""
+def build_features(df, actions, tf_hours, asset_id=1.0, tf_key="4h"):
+    """Build 23 features for one timeframe's data."""
     highs = df["High"].values
     lows = df["Low"].values
     closes = df["Close"].values
@@ -187,6 +203,42 @@ def build_features(df, actions, tf_hours, asset_id=1.0):
             reclaim_dist[i] = (nearest_sh_5[i] - closes[i]) / (closes[i] + 1e-8)
     feat["reclaim_distance"] = reclaim_dist
 
+    # Range boundary feature: is the swept level near a range high/low?
+    at_range_boundary = np.zeros(len(df), dtype=np.float32)
+    atr_vals = compute_atr(highs, lows, closes, period=14)
+    params = RANGE_PARAMS.get(tf_key, RANGE_PARAMS["4h"])
+    wp = params["wide"]
+    _, wide_all = detect_ranges(
+        highs, lows, closes, atr_vals,
+        n_swing=wp["n_swing"], min_bars=wp["min_bars"], max_bars=wp["max_bars"],
+        min_atr_mult=wp["min_atr_mult"], max_atr_mult=wp["max_atr_mult"],
+        tolerance=0.01, touch_tolerance=0.005, min_touches=2,
+    )
+    # Build per-bar active ranges
+    n_bars = len(highs)
+    active_ranges = [[] for _ in range(n_bars)]
+    for r in wide_all:
+        for j in range(r.confirmed, min(r.confirmed + 500, n_bars)):
+            if highs[j] > r.high * 1.03 or lows[j] < r.low * 0.97:
+                break
+            active_ranges[j].append(r)
+    # For each SFP signal, check if swept level is near a range boundary
+    nearest_sh_5, nearest_sl_5 = swing_levels[5]
+    for i in range(n_bars):
+        if actions[i] == 0:
+            continue
+        swept = nearest_sl_5[i] if actions[i] == 1 else nearest_sh_5[i]
+        if np.isnan(swept) or not active_ranges[i]:
+            continue
+        for r in active_ranges[i]:
+            rh, rl = r.high, r.low
+            range_h = rh - rl
+            tol = range_h * 0.003
+            if swept >= rh - tol or swept <= rl + tol:
+                at_range_boundary[i] = 1.0
+                break
+    feat["at_range_boundary"] = at_range_boundary
+
     # Context features
     feat["tf_hours"] = tf_hours / 4.0  # timeframe in hours (normalized by 4h)
     feat["asset_id"] = asset_id
@@ -233,7 +285,8 @@ def load_data_set():
             opens = df["Open"].values
 
             actions, quality, tp_labels, sl_labels = generate_labels(highs, lows, closes, opens)
-            feat, actions = build_features(df, actions, tf_hours, asset_id=asset_id)
+            tf_key = TF_KEYS[tf]
+            feat, actions = build_features(df, actions, tf_hours, asset_id=asset_id, tf_key=tf_key)
 
             # Align labels with dropped warmup
             drop_n = 30
@@ -317,10 +370,10 @@ def load_data_set():
     return train_loader, test_loader, n_features
 
 
-def evaluate(model, test_loader, criterion):
-    """Evaluate and compute metrics including TP/SL ratio quality filter."""
+def evaluate(model, test_loader, criterion, q_criterion):
+    """Evaluate with TP/SL ratio + P(win) quality gate."""
     model.eval()
-    all_tp_preds, all_sl_preds = [], []
+    all_tp_preds, all_sl_preds, all_q_logits = [], [], []
     all_tp_targets, all_sl_targets = [], []
     all_quality = []
     total_loss = 0
@@ -330,19 +383,23 @@ def evaluate(model, test_loader, criterion):
             x = x.to(device)
             tp_t = tp.to(device)
             sl_t = sl.to(device)
+            q_t = q.to(device)
 
-            tp_pred, sl_pred = model(x)
+            tp_pred, sl_pred, q_logit = model(x)
             loss, _, _ = criterion(tp_pred, sl_pred, tp_t, sl_t)
-            total_loss += loss.item()
+            q_loss = q_criterion(q_logit, q_t)
+            total_loss += (loss + q_loss).item()
 
             all_tp_preds.append(tp_pred.cpu())
             all_sl_preds.append(sl_pred.cpu())
+            all_q_logits.append(q_logit.cpu())
             all_tp_targets.append(tp.cpu())
             all_sl_targets.append(sl.cpu())
             all_quality.append(q.cpu())
 
     tp_preds = torch.cat(all_tp_preds)
     sl_preds = torch.cat(all_sl_preds)
+    q_logits = torch.cat(all_q_logits)
     tp_targets = torch.cat(all_tp_targets)
     sl_targets = torch.cat(all_sl_targets)
     quality = torch.cat(all_quality)
@@ -350,8 +407,15 @@ def evaluate(model, test_loader, criterion):
     tp_mae = (tp_preds - tp_targets).abs().mean().item()
     sl_mae = (sl_preds - sl_targets).abs().mean().item()
 
-    # Test TP/SL ratio as quality filter at different thresholds
-    ratio = tp_preds / (sl_preds + 1e-6)
+    # P(win) accuracy
+    p_win = torch.sigmoid(q_logits)
+    q_pred_binary = (p_win > 0.5).float()
+    q_acc = (q_pred_binary == quality).float().mean().item() * 100
+
+    # R:R ratio uses predicted_TP / SL_TARGET (SL is structural, known)
+    ratio = tp_preds / (sl_targets + 1e-6)
+
+    # Results: ratio-only thresholds
     results = {}
     for thresh in [1.0, 1.5, 2.0, 2.5, 3.0]:
         take = ratio > thresh
@@ -362,22 +426,40 @@ def evaluate(model, test_loader, criterion):
             recall = n_profitable / max((quality == 1).sum().item(), 1) * 100
             avg_tp = tp_targets[take].mean().item()
             avg_sl = sl_targets[take].mean().item()
+            rr = avg_tp / (avg_sl + 1e-6)
         else:
-            precision = recall = avg_tp = avg_sl = 0
-        results[thresh] = (n_take, precision, recall, avg_tp, avg_sl)
+            precision = recall = avg_tp = avg_sl = rr = 0
+        results[thresh] = (n_take, precision, recall, avg_tp, avg_sl, rr)
+
+    # Results: ratio + P(win) combined gate
+    combined_results = {}
+    for ratio_thresh in [1.5, 2.0, 2.5, 3.0]:
+        for q_thresh in [0.4, 0.5, 0.6]:
+            take = (ratio > ratio_thresh) & (p_win > q_thresh)
+            n_take = take.sum().item()
+            if n_take > 0:
+                n_profitable = (quality[take] == 1).sum().item()
+                precision = n_profitable / n_take * 100
+                avg_tp = tp_targets[take].mean().item()
+                avg_sl = sl_targets[take].mean().item()
+                rr = avg_tp / (avg_sl + 1e-6)
+            else:
+                precision = avg_tp = avg_sl = rr = 0
+            combined_results[(ratio_thresh, q_thresh)] = (n_take, precision, avg_tp, avg_sl, rr)
 
     # Log prediction spread
-    ratio = tp_preds / (sl_preds + 1e-6)
     prof_ratio = ratio[quality == 1]
     lose_ratio = ratio[quality == 0]
     print(
         f"    Pred spread — "
         f"TP std: {tp_preds.std().item():.3f} | "
         f"SL std: {sl_preds.std().item():.3f} | "
-        f"Ratio: prof={prof_ratio.mean().item():.2f} vs lose={lose_ratio.mean().item():.2f}"
+        f"Ratio: prof={prof_ratio.mean().item():.2f} vs lose={lose_ratio.mean().item():.2f} | "
+        f"P(win): wins={p_win[quality==1].mean().item():.3f} vs loses={p_win[quality==0].mean().item():.3f} | "
+        f"Q acc: {q_acc:.0f}%"
     )
 
-    return total_loss / len(test_loader), tp_mae, sl_mae, results
+    return total_loss / len(test_loader), tp_mae, sl_mae, results, combined_results
 
 
 def train():
@@ -393,10 +475,24 @@ def train():
     n_params = sum(p.numel() for p in model.parameters())
     print(f"SFPTransformer: {n_params:,} parameters")
     resume_lr = 1e-4 if RESUME else 3e-4
-    criterion = RankingRegLoss(margin=0.5, lambda_rank=2.0, lambda_ratio=1.0)
+    criterion = TPFocusedLoss(margin=1.5, lambda_rank=3.0, lambda_ratio=1.0,
+                              sl_weight=0.5, lambda_overest=2.5, lambda_underest=0.5)
+
+    # Quality head loss: P(win) classification
+    # Compute class weight from training data
+    all_q_train = []
+    for x, direction, q, tp, sl in train_loader:
+        all_q_train.append(q)
+    all_q_train = torch.cat(all_q_train)
+    n_wins = (all_q_train == 1).sum().item()
+    n_losses = (all_q_train == 0).sum().item()
+    pos_weight = torch.tensor([n_losses / max(n_wins, 1)]).to(device)
+    print(f"Quality head — wins: {n_wins}, losses: {n_losses}, pos_weight: {pos_weight.item():.2f}")
+    q_criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+
     optimizer = torch.optim.AdamW(model.parameters(), lr=resume_lr, weight_decay=1e-2)
     scheduler = torch.optim.lr_scheduler.OneCycleLR(
-        optimizer, max_lr=resume_lr, epochs=100,
+        optimizer, max_lr=resume_lr, epochs=150,
         steps_per_epoch=len(train_loader),
     )
 
@@ -404,7 +500,7 @@ def train():
     best_loss = float("inf")
     counter = 0
     min_trades = 50  # minimum trades for a valid precision reading
-    epochs = 100
+    epochs = 150
 
     for epoch in range(epochs):
         # --- Train ---
@@ -416,8 +512,10 @@ def train():
             sl_t = sl.to(device)
             q_t = q.to(device)
 
-            tp_pred, sl_pred = model(x)
-            loss, _, _ = criterion(tp_pred, sl_pred, tp_t, sl_t, quality=q_t)
+            tp_pred, sl_pred, q_logit = model(x)
+            tp_sl_loss, _, _ = criterion(tp_pred, sl_pred, tp_t, sl_t, quality=q_t)
+            q_loss = q_criterion(q_logit, q_t)
+            loss = tp_sl_loss + q_loss
 
             optimizer.zero_grad()
             loss.backward()
@@ -427,40 +525,55 @@ def train():
             train_loss += loss.item()
 
         # --- Evaluate ---
-        test_loss, tp_mae, sl_mae, ratio_results = evaluate(model, test_loader, criterion)
+        test_loss, tp_mae, sl_mae, ratio_results, combined_results = evaluate(
+            model, test_loader, criterion, q_criterion
+        )
 
         avg_train_loss = train_loss / len(train_loader)
 
         # Main log line
-        r = ratio_results.get(1.5, (0, 0, 0, 0, 0))
+        r = ratio_results.get(1.5, (0, 0, 0, 0, 0, 0))
+        # Combined: ratio>2.0 + P(win)>0.5
+        c = combined_results.get((2.0, 0.5), (0, 0, 0, 0, 0))
         print(
             f"Epoch {epoch + 1:3d} | "
             f"Loss: {avg_train_loss:.4f} | "
             f"TP MAE: {tp_mae:.3f} | "
             f"SL MAE: {sl_mae:.3f} | "
-            f"Ratio>1.5: {r[0]} trades, {r[1]:.0f}% prec, {r[2]:.0f}% recall"
+            f"Ratio>1.5: {r[0]}t {r[1]:.0f}% | "
+            f"R>2+Q>0.5: {c[0]}t {c[1]:.0f}%"
         )
 
-        # Every 10 epochs, print full ratio analysis
+        # Every 10 epochs, print full analysis
         if (epoch + 1) % 10 == 0:
-            print("  --- Ratio threshold analysis ---")
-            for thresh, (n, prec, rec, avg_tp, avg_sl) in sorted(ratio_results.items()):
+            print("  --- Ratio-only thresholds ---")
+            for thresh, (n, prec, rec, avg_tp, avg_sl, rr) in sorted(ratio_results.items()):
                 print(
                     f"    TP/SL > {thresh}: {n} trades | "
-                    f"Prec: {prec:.0f}% | Recall: {rec:.0f}% | "
+                    f"Prec: {prec:.0f}% | R:R: {rr:.2f} | Recall: {rec:.0f}% | "
                     f"Avg TP: {avg_tp:.2f} | Avg SL: {avg_sl:.2f}"
                 )
+            print("  --- Ratio + P(win) combined gate ---")
+            for (rt, qt), (n, prec, avg_tp, avg_sl, rr) in sorted(combined_results.items()):
+                if n > 0:
+                    print(
+                        f"    R>{rt} + Q>{qt}: {n} trades | "
+                        f"Prec: {prec:.0f}% | R:R: {rr:.2f}"
+                    )
 
         # --- Save best model by multi-threshold score ---
-        # Reward signals at multiple thresholds (1.5, 2.0, 2.5) to encourage wider spread
+        # Score: ratio-only + combined gate bonus
         score = 0.0
         score_parts = []
         for sel_thresh, weight in [(1.5, 1.0), (2.0, 2.0), (2.5, 3.0)]:
-            n_t, p, _, atp, asl = ratio_results.get(sel_thresh, (0, 0, 0, 0, 0))
-            if n_t >= 5 and p > 0 and asl > 0:
-                rr = atp / asl
+            n_t, p, _, atp, asl, rr = ratio_results.get(sel_thresh, (0, 0, 0, 0, 0, 0))
+            if n_t >= 5 and p > 0 and rr > 0:
                 score += weight * p * rr
-                score_parts.append(f">{sel_thresh}: {n_t}t/{p:.0f}%")
+                score_parts.append(f">{sel_thresh}: {n_t}t/{p:.0f}%/R:{rr:.1f}")
+        # Bonus for combined gate lifting precision
+        for (rt, qt), (n, prec, atp, asl, rr) in combined_results.items():
+            if n >= 5 and prec > 0 and qt == 0.5:
+                score += 0.5 * prec * rr  # lighter weight, bonus only
         if score > best_score:
             best_score = score
             torch.save(model.state_dict(), MODEL_FILE)
@@ -481,17 +594,26 @@ def train():
 
     # --- Final evaluation with best model ---
     model.load_state_dict(torch.load(MODEL_FILE, weights_only=True))
-    _, tp_mae, sl_mae, ratio_results = evaluate(model, test_loader, criterion)
+    _, tp_mae, sl_mae, ratio_results, combined_results = evaluate(
+        model, test_loader, criterion, q_criterion
+    )
     print(f"\n{'=' * 60}")
     print(f"Best model — TP MAE: {tp_mae:.3f}, SL MAE: {sl_mae:.3f} (normalized units)")
     print(f"{'=' * 60}")
-    for thresh, (n, prec, rec, avg_tp, avg_sl) in sorted(ratio_results.items()):
-        rr = avg_tp / avg_sl if avg_sl > 0 else 0
+    print("  --- Ratio-only ---")
+    for thresh, (n, prec, rec, avg_tp, avg_sl, rr) in sorted(ratio_results.items()):
         print(
             f"  TP/SL > {thresh}: {n} trades | "
             f"Prec: {prec:.0f}% | R:R: {rr:.2f} | Recall: {rec:.0f}% | "
             f"Avg TP: {avg_tp:.2f} | Avg SL: {avg_sl:.2f}"
         )
+    print("  --- Ratio + P(win) gate ---")
+    for (rt, qt), (n, prec, avg_tp, avg_sl, rr) in sorted(combined_results.items()):
+        if n > 0:
+            print(
+                f"  R>{rt} + Q>{qt}: {n} trades | "
+                f"Prec: {prec:.0f}% | R:R: {rr:.2f}"
+            )
 
 
 train()

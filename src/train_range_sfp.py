@@ -1,13 +1,11 @@
-"""Three-Tap Transformer training: predict TP/SL, use ratio as quality filter.
-
-Ranges detected on 4h, signals on all TFs. Uses soft MSS mode.
+"""Range-SFP classifier training: predict P(win) for boundary SFPs.
 
 Usage:
-    python -m src.train_three_tap              # all TFs, all assets with CSVs
-    python -m src.train_three_tap 1h           # 1h only
-    python -m src.train_three_tap 4h 1h 15min  # all timeframes combined
-    python -m src.train_three_tap 4h 1h 15min --assets btc gold
-    python -m src.train_three_tap 4h 1h 15min --resume
+    python -m src.train_range_sfp              # all TFs, all assets with CSVs
+    python -m src.train_range_sfp 1h           # 1h only
+    python -m src.train_range_sfp 4h 1h 15min  # all timeframes combined
+    python -m src.train_range_sfp 4h 1h 15min --assets btc gold
+    python -m src.train_range_sfp 4h 1h 15min --resume
 """
 
 import os
@@ -19,7 +17,11 @@ from torch import nn
 from sklearn.preprocessing import StandardScaler
 from torch.utils.data import DataLoader
 
-from src.labels.three_tap_labels import generate_labels
+from src.labels.range_sfp_labels import (
+    generate_labels,
+    detect_market_structure,
+)
+from src.labels.three_tap_labels import compute_atr
 from src.models.dataset import SFPDataset
 
 device = torch.accelerator.current_accelerator().type if torch.accelerator.is_available() else "cpu"
@@ -32,7 +34,7 @@ ASSETS = {
     "eth": {"prefix": "eth", "asset_id": 5.0},
 }
 
-# Parse CLI: positional args are timeframes, --assets and --resume flags
+# Parse CLI
 args = sys.argv[1:]
 RESUME = "--resume" in args
 if RESUME:
@@ -45,131 +47,101 @@ else:
     TIMEFRAMES = args if args else ["4h", "1h", "15min"]
     SELECTED_ASSETS = []
 
-# Default: all assets that have at least one CSV file in data/
 if not SELECTED_ASSETS:
     SELECTED_ASSETS = [
         name for name, cfg in ASSETS.items()
         if any(os.path.exists(f"data/{cfg['prefix']}_{tf}.csv") for tf in TIMEFRAMES)
     ]
 
-MODEL_FILE = "best_model_three_tap.pth"
+MODEL_FILE = "best_model_range_sfp.pth"
 
-# Map timeframe string to hours for the context feature
 TF_HOURS = {"15min": 0.25, "1h": 1.0, "4h": 4.0}
 TF_KEYS = {"15min": "15m", "1h": "1h", "4h": "4h"}
 print(f"Training on: {TIMEFRAMES} | Assets: {SELECTED_ASSETS} | Model: {MODEL_FILE}")
 
+N_FEATURES = 20
 
-N_FEATURES = 18  # for model construction
 
+def build_features(df, actions, signal_map, tf_hours, asset_id=1.0):
+    """Build 20 Range-SFP features.
 
-def build_features(df, actions, signal_zones, tf_hours, asset_id=1.0):
-    """Build 18 three-tap specific features.
-
-    10 setup quality features (per-signal, from zone/range metadata)
-    + 5 price context features + direction + 2 context identifiers.
+    12 range context + 4 price context + 4 context/direction.
     """
     n = len(df)
     highs = df["High"].values
     lows = df["Low"].values
     closes = df["Close"].values
     opens = df["Open"].values
-    volumes = df["Volume"].values
 
-    # Precompute ATR and volume average
-    from src.labels.three_tap_labels import compute_atr
     atr = compute_atr(highs, lows, closes, period=14)
-    vol_avg_20 = df["Volume"].rolling(20).mean().values
-
-    prev_close = df["Close"].shift(1).values
+    ms_direction, ms_strength_arr, _, _ = detect_market_structure(highs, lows, n=10)
 
     feat = pd.DataFrame()
 
-    # --- Setup quality features (only non-zero at signal bars) ---
-
-    # 1. Range height / ATR — how significant is this range
-    range_height_atr = np.zeros(n, dtype=np.float32)
-    # 2. Range total touches — how well-tested
-    range_touches = np.zeros(n, dtype=np.float32)
-    # 3. Range age — bars since confirmed to signal bar
+    # --- Range context features (12) ---
+    range_height_pct = np.zeros(n, dtype=np.float32)
+    range_touches_high = np.zeros(n, dtype=np.float32)
+    range_touches_low = np.zeros(n, dtype=np.float32)
+    range_time_concentration = np.zeros(n, dtype=np.float32)
     range_age = np.zeros(n, dtype=np.float32)
-    # 4. Deviation depth — sweep depth as fraction of range height
-    deviation_depth = np.zeros(n, dtype=np.float32)
-    # 5. Zone width / close — how tight is the demand zone
-    zone_width_pct = np.zeros(n, dtype=np.float32)
-    # 6. Structural R:R — TP distance / SL distance
-    structural_rr = np.zeros(n, dtype=np.float32)
-    # 7. Has FVG — was there a real imbalance or fallback
-    has_fvg = np.zeros(n, dtype=np.float32)
-    # 8. Volume at deviation / average — stop hunt confirmation
-    dev_volume_ratio = np.zeros(n, dtype=np.float32)
-    # 9. Bars from deviation to retest — how fresh is the setup
-    bars_since_dev = np.zeros(n, dtype=np.float32)
-    # 10. MSS candle body ratio — strength of reclaim
-    mss_body_ratio = np.zeros(n, dtype=np.float32)
+    sweep_depth = np.zeros(n, dtype=np.float32)
+    reclaim_strength = np.zeros(n, dtype=np.float32)
+    position_in_range = np.zeros(n, dtype=np.float32)
+    vol_compression = np.zeros(n, dtype=np.float32)
+    ms_alignment = np.zeros(n, dtype=np.float32)
+    zone_sl_distance = np.zeros(n, dtype=np.float32)  # structural SL distance
+    zone_tp_distance = np.zeros(n, dtype=np.float32)  # distance to opposite zone
 
-    for i, zone in signal_zones.items():
-        range_h = zone._range_high - zone._range_low
-        local_atr = atr[i] if atr[i] > 0 else 1e-8
+    for i, sig in signal_map.items():
+        r = sig.range_ref
+        range_h = r.high - r.low
+        mid_price = (r.high + r.low) / 2.0
+        entry = sig.swept_level
 
-        range_height_atr[i] = range_h / local_atr
-        range_touches[i] = zone._range_touches / 10.0  # normalize
-        range_age[i] = (i - zone._range_confirmed) / 100.0  # normalize
-
+        range_height_pct[i] = range_h / (mid_price + 1e-8)
+        range_touches_high[i] = r.touches_high / 5.0
+        range_touches_low[i] = r.touches_low / 5.0
+        range_time_concentration[i] = getattr(r, '_time_concentration', 0.8)
+        range_age[i] = (i - r.confirmed) / 200.0
+        sweep_depth[i] = sig.sweep_depth
+        reclaim_strength[i] = sig.reclaim_strength
         if range_h > 0:
-            if zone.direction == 1:  # bullish: sweep below range low
-                deviation_depth[i] = (zone._range_low - zone.deviation_wick) / range_h
-            else:  # bearish: sweep above range high
-                deviation_depth[i] = (zone.deviation_wick - zone._range_high) / range_h
+            position_in_range[i] = (closes[i] - r.low) / range_h
+        vol_compression[i] = getattr(r, '_vol_compression', 1.0)
+        ms_alignment[i] = sig.ms_alignment
 
-        zone_w = zone.top - zone.bottom
-        zone_width_pct[i] = zone_w / (closes[i] + 1e-8)
+        # Structural SL/TP distances from zone boundaries
+        if entry > 0:
+            if sig.direction == 1:  # long
+                zone_sl_distance[i] = (entry - r.support.bottom) / entry
+                zone_tp_distance[i] = (r.resistance.top - entry) / entry
+            elif sig.direction == 2:  # short
+                zone_sl_distance[i] = (r.resistance.top - entry) / entry
+                zone_tp_distance[i] = (entry - r.support.bottom) / entry
 
-        # Structural R:R from TP/SL distances
-        if zone.direction == 1:
-            tp_dist = zone.tp_target - zone.top
-            sl_dist = zone.top - zone.bottom
-        else:
-            tp_dist = zone.bottom - zone.tp_target
-            sl_dist = zone.top - zone.bottom
-        structural_rr[i] = (tp_dist / (sl_dist + 1e-8))
-
-        has_fvg[i] = 1.0 if zone._has_fvg else 0.0
-
-        dev_bar = zone._deviation_bar
-        if 0 <= dev_bar < n and vol_avg_20[dev_bar] > 0:
-            dev_volume_ratio[i] = volumes[dev_bar] / (vol_avg_20[dev_bar] + 1e-8)
-
-        bars_since_dev[i] = (i - zone._deviation_bar) / 30.0  # normalize
-
-        mss_bar = zone._mss_bar
-        if 0 < mss_bar < n:
-            candle_range = highs[mss_bar] - lows[mss_bar]
-            if candle_range > 0:
-                mss_body_ratio[i] = abs(closes[mss_bar] - opens[mss_bar]) / candle_range
-
-    feat["range_height_atr"] = range_height_atr
-    feat["range_touches"] = range_touches
+    feat["range_height_pct"] = range_height_pct
+    feat["range_touches_high"] = range_touches_high
+    feat["range_touches_low"] = range_touches_low
+    feat["range_time_concentration"] = range_time_concentration
     feat["range_age"] = range_age
-    feat["deviation_depth"] = deviation_depth
-    feat["zone_width_pct"] = zone_width_pct
-    feat["structural_rr"] = structural_rr
-    feat["has_fvg"] = has_fvg
-    feat["dev_volume_ratio"] = dev_volume_ratio
-    feat["bars_since_dev"] = bars_since_dev
-    feat["mss_body_ratio"] = mss_body_ratio
+    feat["sweep_depth"] = sweep_depth
+    feat["reclaim_strength"] = reclaim_strength
+    feat["position_in_range"] = position_in_range
+    feat["vol_compression"] = vol_compression
+    feat["ms_alignment"] = ms_alignment
+    feat["zone_sl_distance"] = zone_sl_distance
+    feat["zone_tp_distance"] = zone_tp_distance
 
-    # --- Price context features (every bar) ---
-
+    # --- Price context features (4) ---
     candle_range = df["High"] - df["Low"]
     candle_range_safe = candle_range.replace(0, 1e-8)
     feat["body_ratio"] = (df["Close"] - df["Open"]) / candle_range_safe
     feat["rsi"] = df["rsi"] / 100.0
-    feat["trend_strength"] = (df["Close"] - df["ema_21"]) / df["Close"]
     feat["vol_rel_20"] = df["Volume"] / (df["Volume"].rolling(20).mean() + 1e-8)
-    feat["bb_width"] = df["bb"] / 100.0
+    feat["trend_strength"] = (df["Close"] - df["ema_21"]) / df["Close"]
 
-    # --- Direction + context ---
+    # --- Context features (4) ---
+    feat["ms_strength"] = ms_strength_arr
 
     direction_feat = np.zeros(n, dtype=np.float32)
     direction_feat[actions == 1] = 1.0
@@ -183,17 +155,19 @@ def build_features(df, actions, signal_zones, tf_hours, asset_id=1.0):
     drop_n = 30
     feat = feat.iloc[drop_n:].reset_index(drop=True)
     actions = actions[drop_n:]
-    # Remap signal_zones keys
-    signal_zones_shifted = {k - drop_n: v for k, v in signal_zones.items() if k >= drop_n}
+    signal_map_shifted = {k - drop_n: v for k, v in signal_map.items() if k >= drop_n}
 
+    # Clean up
     feat = feat.replace([float("inf"), float("-inf")], 0.0).fillna(0.0)
     feat["vol_rel_20"] = feat["vol_rel_20"].clip(0, 5.0)
     feat["trend_strength"] = feat["trend_strength"].clip(-0.5, 0.5)
-    feat["structural_rr"] = feat["structural_rr"].clip(0, 10.0)
-    feat["dev_volume_ratio"] = feat["dev_volume_ratio"].clip(0, 5.0)
-    feat["range_height_atr"] = feat["range_height_atr"].clip(0, 15.0)
+    feat["sweep_depth"] = feat["sweep_depth"].clip(0, 2.0)
+    feat["reclaim_strength"] = feat["reclaim_strength"].clip(0, 2.0)
+    feat["range_age"] = feat["range_age"].clip(0, 5.0)
+    feat["zone_sl_distance"] = feat["zone_sl_distance"].clip(0, 0.10)
+    feat["zone_tp_distance"] = feat["zone_tp_distance"].clip(0, 0.15)
 
-    return feat, actions
+    return feat, actions, signal_map_shifted
 
 
 def _process_one_tf(args):
@@ -205,17 +179,15 @@ def _process_one_tf(args):
 
     df = pd.read_csv(data_file).reset_index(drop=True)
 
-    actions, quality, tp_labels, sl_labels, entry_levels, signal_zones = generate_labels(
+    actions, quality, tp_labels, sl_labels, swept_levels, signal_map, _all_ranges, _active_per_bar = generate_labels(
         df["High"].values, df["Low"].values,
         df["Close"].values, df["Open"].values,
-        precomputed_ranges=None,
         tf_key=tf_key,
-        require_mss=True,
-        allow_multi_dev=False,
-        mss_mode="soft",
     )
 
-    feat, actions = build_features(df, actions, signal_zones, tf_hours, asset_id=asset_id)
+    feat, actions, signal_map_shifted = build_features(
+        df, actions, signal_map, tf_hours, asset_id=asset_id,
+    )
 
     drop_n = 30
     quality = quality[drop_n:]
@@ -255,7 +227,6 @@ def load_data_set():
     train_feats, train_actions, train_quality, train_tp, train_sl = [], [], [], [], []
     test_feats, test_actions, test_quality, test_tp, test_sl = [], [], [], [], []
 
-    # Build work items for all asset/TF combos
     work_items = []
     for asset_name in SELECTED_ASSETS:
         asset_cfg = ASSETS[asset_name]
@@ -293,7 +264,6 @@ def load_data_set():
         print("ERROR: No training data loaded!")
         sys.exit(1)
 
-    # Concatenate
     train_feat = np.concatenate(train_feats)
     test_feat = np.concatenate(test_feats)
 
@@ -301,13 +271,6 @@ def load_data_set():
     total_train_signals = int(np.sum(np.concatenate(train_actions) != 0))
     total_test_signals = int(np.sum(np.concatenate(test_actions) != 0))
     print(f"\nCombined — Train: {len(train_feat)} bars ({total_train_signals} signals) | Test: {len(test_feat)} bars ({total_test_signals} signals)")
-    print(f"Features ({n_features}): {list(feat.columns)}")
-
-    all_train_tp = np.concatenate(train_tp)
-    all_train_sl = np.concatenate(train_sl)
-    all_train_actions = np.concatenate(train_actions)
-    sig_m = all_train_actions != 0
-    print(f"Normalized labels — TP median: {np.median(all_train_tp[sig_m]):.3f}, SL median: {np.median(all_train_sl[sig_m]):.3f}")
 
     scaler = StandardScaler()
     train_scaled = scaler.fit_transform(train_feat)
@@ -316,10 +279,10 @@ def load_data_set():
     window = 30
     train_set = SFPDataset(
         train_scaled,
-        all_train_actions,
+        np.concatenate(train_actions),
         np.concatenate(train_quality),
-        all_train_tp,
-        all_train_sl,
+        np.concatenate(train_tp),
+        np.concatenate(train_sl),
         window=window,
     )
     test_set = SFPDataset(
@@ -362,11 +325,9 @@ def evaluate(model, test_loader, criterion, tp_labels_raw, sl_labels_raw):
     quality = torch.cat(all_quality)
     probs = torch.sigmoid(logits)
 
-    # Base win rate
     base_wr = (quality == 1).float().mean().item() * 100
     n_total = len(quality)
 
-    # Evaluate at confidence thresholds
     results = {}
     for thresh in [0.3, 0.4, 0.5, 0.6, 0.7]:
         take = probs > thresh
@@ -375,7 +336,6 @@ def evaluate(model, test_loader, criterion, tp_labels_raw, sl_labels_raw):
             n_win = (quality[take] == 1).sum().item()
             precision = n_win / n_take * 100
             recall = n_win / max((quality == 1).sum().item(), 1) * 100
-            # Compute EV using raw TP/SL
             take_idx = take.numpy()
             avg_tp = float(np.mean(tp_labels_raw[take_idx])) * 100
             avg_sl = float(np.mean(sl_labels_raw[take_idx])) * 100
@@ -384,7 +344,6 @@ def evaluate(model, test_loader, criterion, tp_labels_raw, sl_labels_raw):
             precision = recall = avg_tp = avg_sl = ev = 0
         results[thresh] = (n_take, precision, recall, avg_tp, avg_sl, ev)
 
-    # Pred spread
     prof_probs = probs[quality == 1]
     lose_probs = probs[quality == 0]
     if len(prof_probs) > 0 and len(lose_probs) > 0:
@@ -401,8 +360,8 @@ def evaluate(model, test_loader, criterion, tp_labels_raw, sl_labels_raw):
 def train():
     train_loader, test_loader, n_features = load_data_set()
 
-    from src.models.three_tap_model import ThreeTapClassifier
-    model = ThreeTapClassifier(n_features=n_features, window=30, hidden=24).to(device)
+    from src.models.range_sfp_model import RangeSFPClassifier
+    model = RangeSFPClassifier(n_features=n_features, window=30, hidden=22).to(device)
 
     if RESUME and os.path.exists(MODEL_FILE):
         model.load_state_dict(torch.load(MODEL_FILE, map_location=device, weights_only=True))
@@ -411,9 +370,9 @@ def train():
         print(f"WARNING: --resume but {MODEL_FILE} not found, training from scratch")
 
     n_params = sum(p.numel() for p in model.parameters())
-    print(f"ThreeTapClassifier: {n_params:,} parameters")
+    print(f"RangeSFPClassifier: {n_params:,} parameters")
 
-    # Compute class weight for imbalanced data (more losers than winners)
+    # Compute class weight
     all_q = []
     for x, direction, q, tp, sl in train_loader:
         all_q.append(q)
@@ -480,7 +439,7 @@ def train():
                     f"TP: {avg_tp:.2f}% | SL: {avg_sl:.2f}% | EV: {ev:+.3f}%"
                 )
 
-        # Save best model by EV at P>0.5 (or P>0.4 if more trades)
+        # Save best model by weighted EV score
         score = 0.0
         for thresh, weight in [(0.4, 1.0), (0.5, 2.0), (0.6, 3.0)]:
             n_t, p, _, atp, asl, ev = results.get(thresh, (0, 0, 0, 0, 0, 0))

@@ -10,7 +10,9 @@ ASSETS = {
     "eth": {"symbol": "ETHUSDT", "asset_id": 5.0, "active": True},
 }
 
-N_CANDLES = 500
+N_CANDLES = 1000  # max per Binance API request
+BAR_CACHE_DIR = "cache/bars"
+BAR_CACHE_MAX = 5000  # max bars to keep per asset/TF
 WINDOW = 30
 RATIO_THRESHOLD = 1.4
 SIGNAL_EXPIRY_BARS = 3
@@ -19,6 +21,12 @@ MODEL_PATH = "best_model_transformer.pth"
 THREE_TAP_MODEL_PATH = "best_model_three_tap.pth"
 THREE_TAP_CONFIDENCE = 0.5  # P(win) threshold for three-tap classifier
 THREE_TAP_N_FEATURES = 18
+RANGE_SFP_MODEL_PATH = "best_model_range_sfp.pth"
+RANGE_SFP_CONFIDENCE = 0.5
+RANGE_SFP_N_FEATURES = 18
+RANGE_QUALITY_MODEL_PATH = "best_model_range_quality.pth"
+RANGE_QUALITY_CONFIDENCE = 0.5
+RANGE_QUALITY_N_FEATURES = 16
 LIVE_SIGNALS_PATH = "signals_live.json"
 
 # Past signal files (from backtest validation)

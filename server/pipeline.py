@@ -1,7 +1,8 @@
-"""SFP + Three-Tap detection and feature engineering pipelines.
+"""SFP + Three-Tap + Range-SFP detection and feature engineering pipelines.
 
 SFP: Extracted from src/train_transformer.py:build_features().
 Three-Tap: Mirrors src/train_three_tap.py:build_features().
+Range-SFP: Mirrors src/train_range_sfp.py:build_features().
 """
 
 import numpy as np
@@ -13,7 +14,17 @@ from src.labels.sfp_labels import (
     compute_swing_level_info,
     detect_sfp,
 )
-from src.labels.three_tap_labels import generate_labels as three_tap_generate_labels, compute_atr
+from src.labels.three_tap_labels import (
+    generate_labels as three_tap_generate_labels,
+    compute_atr,
+    detect_ranges,
+    RANGE_PARAMS,
+)
+from src.labels.range_sfp_labels import (
+    generate_labels as range_sfp_generate_labels,
+    detect_market_structure,
+)
+from src.labels.range_quality_labels import build_range_quality_features
 
 
 def run_sfp_detection(df: pd.DataFrame):
@@ -63,15 +74,15 @@ def run_sfp_detection(df: pd.DataFrame):
     return actions, swept_levels
 
 
-def build_features(df: pd.DataFrame, actions: np.ndarray, tf_hours: float, asset_id: float = 1.0):
-    """Build 22 features for one timeframe's data.
+def build_features(df: pd.DataFrame, actions: np.ndarray, tf_hours: float, asset_id: float = 1.0, tf_key: str = "4h"):
+    """Build 23 features for one timeframe's data.
 
-    Extracted from src/train_transformer.py:79-168.
-    Computes all 22 features in exact column order, applies warmup drop (30 bars),
+    Extracted from src/train_transformer.py.
+    Computes all 23 features in exact column order, applies warmup drop (30 bars),
     clipping, and fillna.
 
     Returns:
-        feat_values: float32 array of shape (N-30, 22)
+        feat_values: float32 array of shape (N-30, 23)
         actions_trimmed: actions array with warmup dropped
     """
     highs = df["High"].values
@@ -142,6 +153,40 @@ def build_features(df: pd.DataFrame, actions: np.ndarray, tf_hours: float, asset
         elif actions[i] == 2 and not np.isnan(nearest_sh_5[i]):
             reclaim_dist[i] = (nearest_sh_5[i] - closes[i]) / (closes[i] + 1e-8)
     feat["reclaim_distance"] = reclaim_dist
+
+    # Range boundary feature: is the swept level near a range high/low?
+    at_range_boundary = np.zeros(len(df), dtype=np.float32)
+    atr_vals = compute_atr(highs, lows, closes, period=14)
+    params = RANGE_PARAMS.get(tf_key, RANGE_PARAMS["4h"])
+    wp = params["wide"]
+    _, wide_all = detect_ranges(
+        highs, lows, closes, atr_vals,
+        n_swing=wp["n_swing"], min_bars=wp["min_bars"], max_bars=wp["max_bars"],
+        min_atr_mult=wp["min_atr_mult"], max_atr_mult=wp["max_atr_mult"],
+        tolerance=0.01, touch_tolerance=0.005, min_touches=2,
+    )
+    n_bars = len(highs)
+    active_ranges = [[] for _ in range(n_bars)]
+    for r in wide_all:
+        for j in range(r.confirmed, min(r.confirmed + 500, n_bars)):
+            if highs[j] > r.high * 1.03 or lows[j] < r.low * 0.97:
+                break
+            active_ranges[j].append(r)
+    nearest_sh_5_arr, nearest_sl_5_arr = swing_levels[5]
+    for i in range(n_bars):
+        if actions[i] == 0:
+            continue
+        swept = nearest_sl_5_arr[i] if actions[i] == 1 else nearest_sh_5_arr[i]
+        if np.isnan(swept) or not active_ranges[i]:
+            continue
+        for r in active_ranges[i]:
+            rh, rl = r.high, r.low
+            range_h = rh - rl
+            tol = range_h * 0.003
+            if swept >= rh - tol or swept <= rl + tol:
+                at_range_boundary[i] = 1.0
+                break
+    feat["at_range_boundary"] = at_range_boundary
 
     # Context features
     feat["tf_hours"] = tf_hours / 4.0
@@ -313,3 +358,195 @@ def build_three_tap_features(
     feat["range_height_atr"] = feat["range_height_atr"].clip(0, 15.0)
 
     return feat.values.astype(np.float32), actions_trimmed, signal_zones_shifted
+
+
+# ─── Range-SFP Pipeline ─────────────────────────────────────────────
+
+
+def filter_ranges_by_quality(all_ranges, df, model, tf_hours, asset_id, threshold=0.5):
+    """Filter ranges using the range quality model.
+
+    Returns:
+        filtered_ranges: list of ZoneRange that passed the quality threshold
+        quality_scores: dict of range id -> P(valid) score
+    """
+    highs = df["High"].values
+    lows = df["Low"].values
+    closes = df["Close"].values
+    volumes = df["Volume"].values
+
+    atr = compute_atr(highs, lows, closes, period=14)
+    ms_dir, ms_str, _, _ = detect_market_structure(highs, lows, n=10)
+    rsi = df["rsi"].values if "rsi" in df.columns else np.full(len(highs), 50.0)
+
+    features, _ = build_range_quality_features(
+        highs, lows, closes, volumes, all_ranges,
+        atr, ms_dir, ms_str, rsi, tf_hours, asset_id,
+    )
+
+    if len(features) == 0:
+        return all_ranges, {}
+
+    from sklearn.preprocessing import StandardScaler
+    scaler = StandardScaler()
+    scaled = scaler.fit_transform(features)
+
+    import torch
+    x_t = torch.FloatTensor(scaled)
+    with torch.no_grad():
+        logits = model(x_t)
+    probs = torch.sigmoid(logits).numpy()
+
+    filtered = []
+    quality_scores = {}
+    for i, r in enumerate(all_ranges):
+        quality_scores[id(r)] = float(probs[i])
+        if probs[i] >= threshold:
+            filtered.append(r)
+
+    return filtered, quality_scores
+
+
+def run_range_sfp_detection(df: pd.DataFrame, tf_key: str, range_quality_model=None,
+                            range_quality_threshold=0.5, tf_hours: float = 4.0,
+                            asset_id: float = 1.0):
+    """Run range-SFP label generation with optional range quality pre-filter.
+
+    If range_quality_model is provided, filters out low-quality ranges
+    before SFP boundary matching (post-filter on signal_map).
+
+    Returns:
+        actions: array of 0=no-trade, 1=long, 2=short
+        swept_levels: entry prices for each signal bar
+        signal_map: dict of bar_idx -> RangeSFPSignal
+    """
+    highs = df["High"].values
+    lows = df["Low"].values
+    closes = df["Close"].values
+    opens = df["Open"].values
+
+    actions, _quality, _tp, _sl, swept_levels, signal_map, all_ranges, _active_per_bar = range_sfp_generate_labels(
+        highs, lows, closes, opens,
+        tf_key=tf_key,
+    )
+
+    # Apply range quality filter if model is available
+    if range_quality_model is not None and signal_map:
+        _, quality_scores = filter_ranges_by_quality(
+            all_ranges, df, range_quality_model, tf_hours, asset_id,
+            threshold=range_quality_threshold,
+        )
+
+        # Filter signal_map: remove signals whose range failed quality gate
+        filtered_map = {}
+        for bar_idx, sig in signal_map.items():
+            r_id = id(sig.range_ref)
+            if quality_scores.get(r_id, 0.0) >= range_quality_threshold:
+                filtered_map[bar_idx] = sig
+            else:
+                actions[bar_idx] = 0
+                swept_levels[bar_idx] = 0.0
+
+        signal_map = filtered_map
+
+    return actions, swept_levels, signal_map
+
+
+def build_range_sfp_features(
+    df: pd.DataFrame,
+    actions: np.ndarray,
+    signal_map: dict,
+    tf_hours: float,
+    asset_id: float = 1.0,
+):
+    """Build 18 range-SFP features matching src/train_range_sfp.py.
+
+    Returns:
+        feat_values: float32 array (N-30, 18)
+        actions_trimmed: actions with warmup dropped
+        signal_map_shifted: signal_map with indices shifted by -30
+    """
+    n = len(df)
+    highs = df["High"].values
+    lows = df["Low"].values
+    closes = df["Close"].values
+    opens = df["Open"].values
+
+    atr = compute_atr(highs, lows, closes, period=14)
+    ms_direction, ms_strength_arr, _, _ = detect_market_structure(highs, lows, n=10)
+
+    feat = pd.DataFrame()
+
+    # --- Range context features (10) ---
+    range_height_pct = np.zeros(n, dtype=np.float32)
+    range_touches_high = np.zeros(n, dtype=np.float32)
+    range_touches_low = np.zeros(n, dtype=np.float32)
+    range_time_concentration = np.zeros(n, dtype=np.float32)
+    range_age = np.zeros(n, dtype=np.float32)
+    sweep_depth = np.zeros(n, dtype=np.float32)
+    reclaim_strength = np.zeros(n, dtype=np.float32)
+    position_in_range = np.zeros(n, dtype=np.float32)
+    vol_compression = np.zeros(n, dtype=np.float32)
+    ms_alignment = np.zeros(n, dtype=np.float32)
+
+    for i, sig in signal_map.items():
+        r = sig.range_ref
+        range_h = r.high - r.low
+        mid_price = (r.high + r.low) / 2.0
+
+        range_height_pct[i] = range_h / (mid_price + 1e-8)
+        range_touches_high[i] = r.touches_high / 5.0
+        range_touches_low[i] = r.touches_low / 5.0
+        range_time_concentration[i] = getattr(r, '_time_concentration', 0.8)
+        range_age[i] = (i - r.confirmed) / 200.0
+        sweep_depth[i] = sig.sweep_depth
+        reclaim_strength[i] = sig.reclaim_strength
+        if range_h > 0:
+            position_in_range[i] = (closes[i] - r.low) / range_h
+        vol_compression[i] = getattr(r, '_vol_compression', 1.0)
+        ms_alignment[i] = sig.ms_alignment
+
+    feat["range_height_pct"] = range_height_pct
+    feat["range_touches_high"] = range_touches_high
+    feat["range_touches_low"] = range_touches_low
+    feat["range_time_concentration"] = range_time_concentration
+    feat["range_age"] = range_age
+    feat["sweep_depth"] = sweep_depth
+    feat["reclaim_strength"] = reclaim_strength
+    feat["position_in_range"] = position_in_range
+    feat["vol_compression"] = vol_compression
+    feat["ms_alignment"] = ms_alignment
+
+    # --- Price context features (4) ---
+    candle_range = df["High"] - df["Low"]
+    candle_range_safe = candle_range.replace(0, 1e-8)
+    feat["body_ratio"] = (df["Close"] - df["Open"]) / candle_range_safe
+    feat["rsi"] = df["rsi"] / 100.0
+    feat["vol_rel_20"] = df["Volume"] / (df["Volume"].rolling(20).mean() + 1e-8)
+    feat["trend_strength"] = (df["Close"] - df["ema_21"]) / df["Close"]
+
+    # --- Context features (4) ---
+    feat["ms_strength"] = ms_strength_arr
+
+    direction_feat = np.zeros(n, dtype=np.float32)
+    direction_feat[actions == 1] = 1.0
+    direction_feat[actions == 2] = -1.0
+    feat["direction"] = direction_feat
+    feat["tf_hours"] = tf_hours / 4.0
+    feat["asset_id"] = asset_id
+
+    # Drop warmup
+    drop_n = 30
+    feat = feat.iloc[drop_n:].reset_index(drop=True)
+    actions_trimmed = actions[drop_n:]
+    signal_map_shifted = {k - drop_n: v for k, v in signal_map.items() if k >= drop_n}
+
+    # Clean up
+    feat = feat.replace([float("inf"), float("-inf")], 0.0).fillna(0.0)
+    feat["vol_rel_20"] = feat["vol_rel_20"].clip(0, 5.0)
+    feat["trend_strength"] = feat["trend_strength"].clip(-0.5, 0.5)
+    feat["sweep_depth"] = feat["sweep_depth"].clip(0, 2.0)
+    feat["reclaim_strength"] = feat["reclaim_strength"].clip(0, 2.0)
+    feat["range_age"] = feat["range_age"].clip(0, 5.0)
+
+    return feat.values.astype(np.float32), actions_trimmed, signal_map_shifted

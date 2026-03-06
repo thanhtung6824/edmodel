@@ -3,7 +3,7 @@ from torch import nn
 
 
 class SFPTransformer(nn.Module):
-    def __init__(self, n_features=22, d_model=128, nhead=8, num_layers=3, dim_ff=256, dropout=0.1):
+    def __init__(self, n_features=23, d_model=128, nhead=8, num_layers=3, dim_ff=256, dropout=0.1):
         super(SFPTransformer, self).__init__()
 
         self.input_proj = nn.Linear(n_features, d_model)
@@ -45,6 +45,13 @@ class SFPTransformer(nn.Module):
             nn.Softplus(),
         )
 
+        # Quality head: P(win) classification
+        self.quality_head = nn.Sequential(
+            nn.Linear(d_model, d_model // 2),
+            nn.ReLU(),
+            nn.Linear(d_model // 2, 1),
+        )
+
     def forward(self, x):
         B = x.shape[0]
         x = self.input_proj(x)                           # (B,30,d_model)
@@ -57,4 +64,5 @@ class SFPTransformer(nn.Module):
         combined = self.norm(combined)
         tp = self.tp_head(combined).squeeze(-1)           # (B,)
         sl = self.sl_head(combined).squeeze(-1)           # (B,)
-        return tp, sl
+        q_logit = self.quality_head(combined).squeeze(-1) # (B,) raw logit for P(win)
+        return tp, sl, q_logit

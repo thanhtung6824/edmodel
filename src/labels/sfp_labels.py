@@ -178,12 +178,16 @@ def compute_tp_sl_labels(df_high, df_low, df_close, actions, swept_levels, horiz
     is closer to the invalidation point.
 
     For longs: TP = (max future High - entry) / entry
-               SL = (entry - min future Low) / entry
+               SL = (entry - stop_level) / entry  (structural: SFP candle low)
     For shorts: TP = (entry - min future Low) / entry
-                SL = (max future High - entry) / entry
+                SL = (stop_level - entry) / entry  (structural: SFP candle high)
+
+    SL is the STRUCTURAL stop distance (entry to SFP candle extreme), not
+    max adverse excursion. This produces consistent, predictable SL labels
+    that the model can learn effectively.
 
     Quality: 1 = profitable (end_close favorable AND stop not hit), 0 = losing.
-    Clips TP/SL to [0.001, 0.10]. Non-SFP bars get tp=0, sl=0, quality=0.
+    Clips TP to [0.001, 0.10], SL to [0.001, 0.08]. Non-SFP bars get 0.
     """
     length = len(actions)
     tp_labels = np.zeros(length, dtype=np.float32)
@@ -208,23 +212,22 @@ def compute_tp_sl_labels(df_high, df_low, df_close, actions, swept_levels, horiz
         min_low = np.min(future_lows)
         end_close = df_close[i + horizon]
 
-        # Determine profitability (quality label)
-        # Allow 0.1% buffer beyond SFP candle's extreme for stop check
+        # SL = structural stop distance (entry to SFP candle extreme + buffer)
         stop_buffer = 0.001
         if actions[i] == 1:  # long
             tp = (max_high - entry) / entry
-            sl = (entry - min_low) / entry
             stop_level = df_low[i] * (1 - stop_buffer)
+            sl = max((entry - stop_level) / entry, 0.001)
             profitable = end_close > entry and min_low > stop_level
         else:  # short
             tp = (entry - min_low) / entry
-            sl = (max_high - entry) / entry
             stop_level = df_high[i] * (1 + stop_buffer)
+            sl = max((stop_level - entry) / entry, 0.001)
             profitable = end_close < entry and max_high < stop_level
 
         quality[i] = 1 if profitable else 0
         tp_labels[i] = np.clip(tp, 0.001, 0.10)
-        sl_labels[i] = np.clip(sl, 0.001, 0.10)
+        sl_labels[i] = np.clip(sl, 0.001, 0.08)
 
     return quality, tp_labels, sl_labels
 

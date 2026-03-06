@@ -14,14 +14,26 @@ from apscheduler.triggers.cron import CronTrigger
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 
-from server.binance import fetch_candles
+from server.binance import (
+    fetch_candles,
+    load_bar_cache,
+    merge_bar_cache,
+    recompute_indicators,
+    save_bar_cache,
+    seed_from_csv,
+)
 from server.config import (
     ASSETS,
+    BAR_CACHE_MAX,
     HISTORY_FILES,
     LIVE_SIGNALS_PATH,
     MEDIAN_TP_SL,
     MODEL_PATH,
     N_CANDLES,
+    RANGE_QUALITY_CONFIDENCE,
+    RANGE_QUALITY_MODEL_PATH,
+    RANGE_SFP_CONFIDENCE,
+    RANGE_SFP_MODEL_PATH,
     RATIO_THRESHOLD,
     SIGNAL_EXPIRY_BARS,
     SIGNAL_HORIZON,
@@ -30,10 +42,19 @@ from server.config import (
     TIMEFRAMES,
     WINDOW,
 )
-from server.inference import load_model, load_three_tap_model, predict_three_tap_bar
+from server.inference import (
+    load_model,
+    load_range_quality_model,
+    load_range_sfp_model,
+    load_three_tap_model,
+    predict_range_sfp_bar,
+    predict_three_tap_bar,
+)
 from server.pipeline import (
     build_features,
+    build_range_sfp_features,
     build_three_tap_features,
+    run_range_sfp_detection,
     run_sfp_detection,
     run_three_tap_detection,
 )
@@ -52,6 +73,8 @@ live_signals: list[dict] = []  # all live signals (persisted to JSON)
 candle_store: dict[str, list[dict]] = {}  # tf_key -> [{time, open, high, low, close}, ...]
 sfp_model = None
 three_tap_model = None
+range_sfp_model = None
+range_quality_model = None
 scheduler = AsyncIOScheduler(timezone=timezone.utc)
 last_run: dict[str, str] = {}
 last_bar_time: dict[str, int] = {}  # job_key -> latest candle timestamp
@@ -146,8 +169,21 @@ async def run_job(asset_key: str, tf_key: str):
     logger.info(f"[{job_key}] Job started ({symbol})")
 
     try:
-        df = await fetch_candles(symbol, cfg["interval"], limit=N_CANDLES)
-        logger.info(f"[{job_key}] Fetched {len(df)} candles")
+        fresh_df = await fetch_candles(symbol, cfg["interval"], limit=N_CANDLES)
+        logger.info(f"[{job_key}] Fetched {len(fresh_df)} fresh candles")
+
+        # ─── Bar Cache: merge fresh with cached bars ──────────────
+        cached_df = load_bar_cache(asset_key, tf_key)
+        if cached_df.empty:
+            # First run — try seeding from historical CSV
+            cached_df = seed_from_csv(asset_key, tf_key)
+
+        merged_df = merge_bar_cache(cached_df, fresh_df, max_bars=BAR_CACHE_MAX)
+        save_bar_cache(merged_df, asset_key, tf_key)
+
+        # Recompute indicators on full merged dataset
+        df = recompute_indicators(merged_df)
+        logger.info(f"[{job_key}] Bar cache: {len(merged_df)} bars total → {len(df)} after indicators")
 
         # Store candle data for chart endpoint
         candles = [
@@ -178,7 +214,7 @@ async def run_job(asset_key: str, tf_key: str):
         # ─── SFP Pipeline ────────────────────────────────────────
         if sfp_model is not None:
             actions, swept_levels = run_sfp_detection(df)
-            feat_values, actions_trimmed = build_features(df, actions, cfg["tf_hours"], asset_id=asset_id)
+            feat_values, actions_trimmed = build_features(df, actions, cfg["tf_hours"], asset_id=asset_id, tf_key=tf_key)
             n_trimmed = len(actions_trimmed)
             logger.info(f"[{job_key}] SFP: {int((actions_trimmed != 0).sum())} signals detected")
 
@@ -199,10 +235,11 @@ async def run_job(asset_key: str, tf_key: str):
                 x = scaled[bar_idx - WINDOW + 1: bar_idx + 1]
                 x_t = torch.FloatTensor(x).unsqueeze(0)
                 with torch.no_grad():
-                    tp_pred, sl_pred = sfp_model(x_t)
+                    tp_pred, sl_pred, q_logit = sfp_model(x_t)
                 tp_norm = tp_pred.item()
                 sl_norm = sl_pred.item()
                 ratio = tp_norm / (sl_norm + 1e-6)
+                p_win = torch.sigmoid(q_logit).item()
 
                 if ratio <= RATIO_THRESHOLD:
                     continue
@@ -233,7 +270,8 @@ async def run_job(asset_key: str, tf_key: str):
                     "tp_price": round(tp_price, 2),
                     "sl_price": round(sl_price, 2),
                     "ratio": round(ratio, 4),
-                    "confidence": None,
+                    "p_win": round(p_win, 3),
+                    "confidence": round(p_win, 3),
                     "bars_remaining": remaining,
                     "status": "open",
                     "actual_r": None,
@@ -327,6 +365,91 @@ async def run_job(asset_key: str, tf_key: str):
                 if bars_ago < SIGNAL_EXPIRY_BARS:
                     await send_signal_alert(signal)
 
+        # ─── Range-SFP Pipeline ────────────────────────────────────
+        if range_sfp_model is not None:
+            rs_actions, rs_swept, rs_signal_map = run_range_sfp_detection(
+                df, tf_key,
+                range_quality_model=range_quality_model,
+                range_quality_threshold=RANGE_QUALITY_CONFIDENCE,
+                tf_hours=cfg["tf_hours"],
+                asset_id=asset_id,
+            )
+            rs_feat, rs_actions_trimmed, rs_map_shifted = build_range_sfp_features(
+                df, rs_actions, rs_signal_map, cfg["tf_hours"], asset_id=asset_id,
+            )
+            n_rs = len(rs_actions_trimmed)
+            logger.info(f"[{job_key}] Range-SFP: {int((rs_actions_trimmed != 0).sum())} signals detected")
+
+            rs_scaler = StandardScaler()
+            rs_scaled = rs_scaler.fit_transform(rs_feat)
+
+            for bar_idx in range(WINDOW - 1, n_rs):
+                action = int(rs_actions_trimmed[bar_idx])
+                if action == 0:
+                    continue
+
+                orig_idx = drop_n + bar_idx
+                bar_time = candles[orig_idx]["time"] if orig_idx < len(candles) else candles[-1]["time"]
+                if (bar_time, "Range-SFP") in signaled_times:
+                    continue
+
+                if bar_idx not in rs_map_shifted:
+                    continue
+
+                prob = predict_range_sfp_bar(range_sfp_model, rs_scaled, bar_idx)
+                if prob is None or prob < RANGE_SFP_CONFIDENCE:
+                    continue
+
+                sig_info = rs_map_shifted[bar_idx]
+                r = sig_info.range_ref
+                is_long = action == 1
+                direction = "LONG" if is_long else "SHORT"
+
+                # Entry = swept level, TP = opposite range boundary, SL = SFP wick extreme
+                entry = float(rs_swept[orig_idx])
+                if is_long:
+                    tp_price = r.high
+                    sl_price = float(df["Low"].values[orig_idx])
+                else:
+                    tp_price = r.low
+                    sl_price = float(df["High"].values[orig_idx])
+
+                tp_pct = abs(tp_price - entry) / (entry + 1e-8) * 100
+                sl_pct = abs(sl_price - entry) / (entry + 1e-8) * 100
+                ratio = tp_pct / (sl_pct + 1e-6)
+
+                bars_ago = n_rs - 1 - bar_idx
+                remaining = max(SIGNAL_EXPIRY_BARS - bars_ago, 0)
+
+                signal = {
+                    "strategy": "Range-SFP",
+                    "timeframe": tf_key,
+                    "asset": asset_key,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "time": bar_time,
+                    "symbol": symbol,
+                    "direction": direction,
+                    "entry": round(entry, 2),
+                    "tp_pct": round(tp_pct, 2),
+                    "sl_pct": round(sl_pct, 2),
+                    "tp_price": round(tp_price, 2),
+                    "sl_price": round(sl_price, 2),
+                    "ratio": round(ratio, 4),
+                    "confidence": round(prob, 3),
+                    "bars_remaining": remaining,
+                    "status": "open",
+                    "actual_r": None,
+                    "resolved_at": None,
+                }
+                active_signals.append(signal)
+                live_signals.append(signal)
+                signaled_times.add((bar_time, "Range-SFP"))
+                new_signals += 1
+                logger.info(f"[{job_key}] RANGE-SFP SIGNAL: {direction} @ {entry:.2f} (P={prob:.2f}, R:R={ratio:.2f}, bar -{bars_ago})")
+
+                if bars_ago < SIGNAL_EXPIRY_BARS:
+                    await send_signal_alert(signal)
+
         # ─── Finalize ─────────────────────────────────────────────
         if new_signals > 0:
             _save_live_signals()
@@ -365,7 +488,7 @@ def _expire_active_signals(job_key: str, current_bar_time: int):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Load models on startup, start scheduler, run all jobs once."""
-    global sfp_model, three_tap_model
+    global sfp_model, three_tap_model, range_sfp_model, range_quality_model
 
     _load_live_signals()
 
@@ -382,6 +505,20 @@ async def lifespan(app: FastAPI):
         logger.info("Three-Tap model loaded")
     else:
         logger.warning("Three-Tap model not found at %s — 3-Tap signals disabled", THREE_TAP_MODEL_PATH)
+
+    if Path(RANGE_QUALITY_MODEL_PATH).exists():
+        logger.info("Loading Range Quality model from %s", RANGE_QUALITY_MODEL_PATH)
+        range_quality_model = load_range_quality_model(RANGE_QUALITY_MODEL_PATH)
+        logger.info("Range Quality model loaded")
+    else:
+        logger.warning("Range Quality model not found at %s — quality pre-filter disabled", RANGE_QUALITY_MODEL_PATH)
+
+    if Path(RANGE_SFP_MODEL_PATH).exists():
+        logger.info("Loading Range-SFP model from %s", RANGE_SFP_MODEL_PATH)
+        range_sfp_model = load_range_sfp_model(RANGE_SFP_MODEL_PATH)
+        logger.info("Range-SFP model loaded")
+    else:
+        logger.warning("Range-SFP model not found at %s — Range-SFP signals disabled", RANGE_SFP_MODEL_PATH)
 
     active_assets = {k: v for k, v in ASSETS.items() if v.get("active", True)}
     for asset_key in active_assets:
@@ -476,6 +613,8 @@ async def health():
         "status": "ok",
         "sfp_model_loaded": sfp_model is not None,
         "three_tap_model_loaded": three_tap_model is not None,
+        "range_quality_model_loaded": range_quality_model is not None,
+        "range_sfp_model_loaded": range_sfp_model is not None,
         "scheduled_jobs": jobs,
         "active_signals": len(active_signals),
         "live_stats": {
