@@ -13,20 +13,17 @@ ASSETS = {
 N_CANDLES = 1000  # max per Binance API request
 BAR_CACHE_DIR = "cache/bars"
 BAR_CACHE_MAX = 5000  # max bars to keep per asset/TF
-WINDOW = 30
-RATIO_THRESHOLD = 1.4
+WINDOW_BY_TF = {"15m": 120, "1h": 48, "4h": 30}
+WINDOW = max(WINDOW_BY_TF.values())  # 120, used as fallback/max
 SIGNAL_EXPIRY_BARS = 3
 SIGNAL_HORIZON = 18  # bars to track outcome (matches backtest)
-MODEL_PATH = "best_model_transformer.pth"
-THREE_TAP_MODEL_PATH = "best_model_three_tap.pth"
-THREE_TAP_CONFIDENCE = 0.5  # P(win) threshold for three-tap classifier
-THREE_TAP_N_FEATURES = 18
-RANGE_SFP_MODEL_PATH = "best_model_range_sfp.pth"
-RANGE_SFP_CONFIDENCE = 0.5
-RANGE_SFP_N_FEATURES = 18
-RANGE_QUALITY_MODEL_PATH = "best_model_range_quality.pth"
-RANGE_QUALITY_CONFIDENCE = 0.5
-RANGE_QUALITY_N_FEATURES = 16
+
+# Liq+Range+SFP model
+MODEL_PATH = "best_model_liq_range_sfp.pth"
+SCALER_PATH = "liq_range_sfp_scaler.joblib"
+MODEL_CONFIDENCE = 0.3  # P(win) threshold
+N_FEATURES = 24
+
 LIVE_SIGNALS_PATH = "signals_live.json"
 
 # Past signal files (from backtest validation)
@@ -41,39 +38,24 @@ TIMEFRAMES = {
     "15m": {
         "interval": "15m",
         "tf_hours": 0.25,
+        "tf_key": "15m",
         # Run at :01, :16, :31, :46 UTC (1 min after candle close)
         "cron": {"minute": "1,16,31,46"},
     },
     "1h": {
         "interval": "1h",
         "tf_hours": 1.0,
+        "tf_key": "1h",
         # Run every 10min to catch partial-candle SFPs early
         "cron": {"minute": "1,11,21,31,41,51"},
     },
     "4h": {
         "interval": "4h",
         "tf_hours": 4.0,
+        "tf_key": "4h",
         # Run every 10min to catch partial-candle SFPs early
         "cron": {"minute": "1,11,21,31,41,51"},
     },
-}
-
-# Median TP/SL from training data — used to denormalize model predictions.
-# Model outputs normalized values (1.0 = median). Multiply by these to get actual fractions.
-# Key format: (asset, tf_key)
-MEDIAN_TP_SL = {
-    ("btc", "15m"): (0.00824, 0.00463),
-    ("btc", "1h"):  (0.01682, 0.00987),
-    ("btc", "4h"):  (0.03512, 0.02176),
-    ("sol", "15m"): (0.01656, 0.01005),
-    ("sol", "1h"):  (0.03388, 0.02258),
-    ("sol", "4h"):  (0.06991, 0.04339),
-    ("eth", "15m"): (0.01077, 0.00627),
-    ("eth", "1h"):  (0.02289, 0.01373),
-    ("eth", "4h"):  (0.04750, 0.02684),
-    ("gold", "15m"): (0.00270, 0.00163),
-    ("gold", "1h"):  (0.00585, 0.00356),
-    ("gold", "4h"):  (0.01239, 0.00791),
 }
 
 # Telegram bot — set via environment variables

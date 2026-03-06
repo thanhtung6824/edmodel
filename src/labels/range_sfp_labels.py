@@ -138,16 +138,16 @@ def detect_market_structure(highs, lows, n=10):
 
 # Height filter: range height as % of price
 RANGE_HEIGHT_PCT = {
-    "15m": (0.003, 0.06),
-    "1h":  (0.005, 0.08),
-    "4h":  (0.005, 0.08),
+    "15m": (0.003, 0.06),   # tighter max — quality filter
+    "1h":  (0.005, 0.12),   # keep relaxed
+    "4h":  (0.005, 0.12),   # keep relaxed
 }
 
 # Range detection parameters per TF
 RANGE_SFP_PARAMS = {
-    "15m": {"n_swing": 3, "min_bars": 30, "max_bars": 400, "min_zone_count": 4},
-    "1h":  {"n_swing": 3, "min_bars": 20, "max_bars": 300, "min_zone_count": 4},
-    "4h":  {"n_swing": 3, "min_bars": 25, "max_bars": 250, "min_zone_count": 5},
+    "15m": {"n_swing": 3, "min_bars": 30, "max_bars": 400, "min_zone_count": 4, "min_time_concentration": 0.80},
+    "1h":  {"n_swing": 3, "min_bars": 15, "max_bars": 300, "min_zone_count": 3, "min_time_concentration": 0.70},
+    "4h":  {"n_swing": 3, "min_bars": 20, "max_bars": 300, "min_zone_count": 3, "min_time_concentration": 0.65},
 }
 
 
@@ -606,6 +606,7 @@ def generate_labels(highs, lows, closes, opens, tf_key="4h"):
         min_height_pct=height_min,
         max_height_pct=height_max,
         min_zone_count=params.get("min_zone_count", 2),
+        min_time_concentration=params.get("min_time_concentration", 0.80),
     )
     n_post = sum(1 for r in all_ranges if r.support.count == 1 or r.resistance.count == 1)
     n_primary = len(all_ranges) - n_post
@@ -669,6 +670,17 @@ def generate_labels(highs, lows, closes, opens, tf_key="4h"):
         best_range = None
         best_score = -1.0
 
+        # Per-TF zone_buffer and reclaim strictness
+        if tf_key == "15m":
+            zone_buffer = 0.0              # no tolerance — strict
+            strict_reclaim = True          # close must beat zone.top / zone.bottom
+        elif tf_key == "4h":
+            zone_buffer = atr[i] * 0.15   # aggressive tolerance
+            strict_reclaim = False         # close >= zone.level is enough
+        else:  # 1h
+            zone_buffer = atr[i] * 0.1    # moderate tolerance
+            strict_reclaim = False
+
         for r in active_per_bar[i]:
             range_height = r.high - r.low
             if range_height <= 0:
@@ -676,14 +688,16 @@ def generate_labels(highs, lows, closes, opens, tf_key="4h"):
 
             is_boundary = False
             if direction == 1:  # long: swept at zone, deep wick, close above zone
-                if (swept >= r.support.bottom and swept <= r.support.top
+                reclaim_ok = closes[i] > r.support.top if strict_reclaim else closes[i] >= r.support.level
+                if (swept >= r.support.bottom - zone_buffer and swept <= r.support.top + zone_buffer
                         and lows[i] < r.support.level
-                        and closes[i] > r.support.top):
+                        and reclaim_ok):
                     is_boundary = True
             elif direction == 2:  # short: swept at zone, deep wick, close below zone
-                if (swept >= r.resistance.bottom and swept <= r.resistance.top
+                reclaim_ok = closes[i] < r.resistance.bottom if strict_reclaim else closes[i] <= r.resistance.level
+                if (swept >= r.resistance.bottom - zone_buffer and swept <= r.resistance.top + zone_buffer
                         and highs[i] > r.resistance.level
-                        and closes[i] < r.resistance.bottom):
+                        and reclaim_ok):
                     is_boundary = True
 
             if not is_boundary:
