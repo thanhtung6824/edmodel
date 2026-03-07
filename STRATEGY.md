@@ -188,7 +188,7 @@ Computed lazily, only for bars that pass the boundary filter:
 
 ---
 
-## 6. Feature Engineering (18 Features)
+## 6. Feature Engineering (27 Features)
 
 **File:** `src/train_liq_range_sfp.py:build_features()` / `server/pipeline.py:build_liq_range_sfp_features()`
 
@@ -202,45 +202,54 @@ All features are computed per bar after dropping 30 warmup bars (for ATR-14, etc
 | 3 | `sweep_depth_range` | wick beyond boundary / range_height, clipped [0, 2] |
 | 4 | `reclaim_strength_range` | (close - boundary) / range_height, clipped [0, 2] |
 
-### Liquidation Features (3)
+### Liquidation Features (5)
 | # | Feature | Normalization |
 |---|---|---|
-| 5 | `weighted_liq_swept` | min(w, 3.0) / 3.0 |
-| 6 | `max_leverage_norm` | leverage / 100 |
-| 7 | `liq_cascade_depth` | cascade_depth / ATR, clipped [0, 5] |
+| 5 | `n_liq_swept_norm` | min(n, 30) / 30 |
+| 6 | `weighted_liq_swept` | min(w, 3.0) / 3.0 |
+| 7 | `max_leverage_norm` | leverage / 100 |
+| 8 | `liq_cascade_depth` | cascade_depth / ATR, clipped [0, 5] |
+| 9 | `n_swings_with_liq` | min(n, 10) / 10 |
 
-### SFP Candle Features (2)
+### SFP Candle Features (4)
 | # | Feature | Description |
 |---|---|---|
-| 8 | `wick_ratio` | rejection wick / candle_range |
-| 9 | `zone_sl_dist` | entry to zone boundary (SL side), clipped [0, 10%] |
+| 10 | `body_ratio` | (close - open) / candle_range |
+| 11 | `wick_ratio` | rejection wick / candle_range |
+| 12 | `zone_sl_dist` | entry to zone boundary (SL side), clipped [0, 10%] |
+| 13 | `zone_tp_dist` | entry to opposite boundary (TP side), clipped [0, 15%] |
 
-### Context Features (3)
+### Context Features (6)
 | # | Feature | Description |
 |---|---|---|
-| 10 | `trend_strength` | (close - EMA21) / close, clipped [-0.5, 0.5] |
-| 11 | `ms_alignment` | +1 if signal aligns with market structure, -1 if against, 0 unclear |
-| 12 | `asset_id` | numeric asset identifier |
+| 14 | `rsi` | RSI / 100 |
+| 15 | `trend_strength` | (close - EMA21) / close, clipped [-0.5, 0.5] |
+| 16 | `ms_alignment` | +1 if signal aligns with market structure, -1 if against, 0 unclear |
+| 17 | `ms_strength` | consecutive HH/HL or LH/LL count / 5 |
+| 18 | `tf_hours` | timeframe in hours / 4 (0.0625 for 15m, 0.25 for 1h, 1.0 for 4h) |
+| 19 | `asset_id` | numeric asset identifier |
 
-### Range Fingerprint Features (3)
+### Range Fingerprint Features (5)
 | # | Feature | Description |
 |---|---|---|
-| 13 | `is_recaptured` | 1.0 if range was broken then recaptured |
-| 14 | `touch_symmetry` | min(touches_high, touches_low) / max(touches_high, touches_low) |
-| 15 | `range_position` | (close - support) / range_height, clipped [0, 1] |
+| 20 | `signal_type` | 0=SFP boundary, 1=range approach |
+| 21 | `is_recaptured` | 1.0 if range was broken then recaptured |
+| 22 | `is_nested` | 1.0 if range is inside a macro range |
+| 23 | `touch_symmetry` | min(touches_high, touches_low) / max(touches_high, touches_low) |
+| 24 | `range_position` | (close - support) / range_height, clipped [0, 1] |
 
 ### Direction Feature (1)
 | # | Feature | Description |
 |---|---|---|
-| 16 | `direction_feat` | 1.0 for long, -1.0 for short, 0 for non-signal bars |
+| 25 | `direction_feat` | 1.0 for long, -1.0 for short, 0 for non-signal bars |
 
 ### HTF Alignment Features (2)
 Computed by resampling current TF data 4:1 to simulate higher-TF context (15m→1h, 1h→4h, 4h→16h).
 
 | # | Feature | Description |
 |---|---|---|
-| 17 | `htf_trend` | (close - EMA21) / close on resampled data, clipped [-0.5, 0.5] |
-| 18 | `htf_rsi` | RSI-14 on resampled data, normalized [0, 1] |
+| 26 | `htf_trend` | (close - EMA21) / close on resampled data, clipped [-0.5, 0.5] |
+| 27 | `htf_rsi` | RSI-14 on resampled data, normalized [0, 1] |
 
 ---
 
@@ -251,9 +260,9 @@ Computed by resampling current TF data 4:1 to simulate higher-TF context (15m→
 `LiqRangeSFPClassifier` — 5-head model with direction-conditioned FiLM, positional encoding, and 2-layer transformer (~80K parameters).
 
 ```
-Input: (batch, window, 18)
+Input: (batch, window, 27)
   |
-Linear(18 -> 48) + ReLU            # per-bar projection
+Linear(27 -> 48) + ReLU            # per-bar projection
   |
 + pos_embed (learnable, 1×window×48)  # positional encoding
   |
@@ -431,7 +440,7 @@ Per scheduled job (each asset x TF):
 1. Fetch 1000 candles from Binance, merge with bar cache (up to 5000 bars)
 2. Recompute indicators (OBV, BB, EMA21, RSI)
 3. Run `run_liq_range_sfp_detection()` -> signals with boundary filter
-4. Build features (18) -> scale with saved `StandardScaler`
+4. Build features (27) -> scale with saved `StandardScaler`
 5. For each signal bar: `predict_bar(model, scaled, bar_idx, tf_key, asset_id)` -> `(P(win), tp1_dist, tp2_dist, ttp, sl_dist)`
 6. If `P(win) >= 0.3`: emit signal with entry, model-predicted TP/SL levels, and ttp
 

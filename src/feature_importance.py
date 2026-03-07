@@ -1,6 +1,6 @@
 """Permutation feature importance for Liq+Range+SFP model.
 
-Shuffles each of the 18 features independently on the test set, measures
+Shuffles each of the 27 features independently on the test set, measures
 TP1 EV degradation at P>0.5. Largest degradation = most important feature.
 
 Usage:
@@ -21,10 +21,13 @@ MODEL_FILE = "best_model_liq_range_sfp.pth"
 # Feature names in order (must match build_features output)
 FEATURE_NAMES = [
     "range_height_pct", "range_age", "sweep_depth_range",
-    "reclaim_strength_range", "weighted_liq_swept", "max_leverage_norm",
-    "liq_cascade_depth", "wick_ratio", "zone_sl_dist",
-    "trend_strength", "ms_alignment", "asset_id",
-    "is_recaptured", "touch_symmetry", "range_position",
+    "reclaim_strength_range", "n_liq_swept_norm", "weighted_liq_swept",
+    "max_leverage_norm", "liq_cascade_depth", "n_swings_with_liq",
+    "body_ratio", "wick_ratio", "zone_sl_dist",
+    "zone_tp_dist", "rsi", "trend_strength",
+    "ms_alignment", "ms_strength", "tf_hours",
+    "asset_id", "signal_type", "is_recaptured",
+    "is_nested", "touch_symmetry", "range_position",
     "direction_feat", "htf_trend", "htf_rsi",
 ]
 

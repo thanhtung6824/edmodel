@@ -20,6 +20,7 @@ from sklearn.preprocessing import StandardScaler
 from torch.utils.data import DataLoader
 
 from src.labels.liq_sfp_labels import generate_labels
+from src.labels.range_sfp_labels import detect_market_structure
 from src.labels.three_tap_labels import compute_atr
 from src.models.dataset import SFPDataset
 from server.pipeline import compute_htf_features
@@ -73,21 +74,23 @@ TRAIN_START = "2018-01-01"
 mode_str = "walk-forward" if WALK_FORWARD else ("ensemble=" + str(ENSEMBLE_N) if ENSEMBLE_N > 1 else "standard")
 print(f"Training on: {TIMEFRAMES} | Assets: {SELECTED_ASSETS} | Start: {TRAIN_START} | Model: {MODEL_FILE} | Mode: {mode_str}")
 
-N_FEATURES = 18
+N_FEATURES = 27
 
 
 def build_features(df, actions, signal_map, tf_hours, asset_id=1.0):
-    """Build 18 Liq+Range+SFP features.
+    """Build 27 Liq+Range+SFP features.
 
-    4 range + 3 liquidation + 2 SFP candle + 3 context
-    + 3 range fingerprint + 1 direction + 2 HTF.
+    4 range + 5 liquidation + 4 SFP candle + 6 context
+    + 5 range fingerprint + 1 direction + 2 HTF.
     """
     n = len(df)
     highs = df["High"].values
     lows = df["Low"].values
     closes = df["Close"].values
+    opens = df["Open"].values
 
     atr = compute_atr(highs, lows, closes, period=14)
+    ms_direction, ms_strength_arr, _, _ = detect_market_structure(highs, lows, n=10)
 
     feat = pd.DataFrame()
 
@@ -97,14 +100,18 @@ def build_features(df, actions, signal_map, tf_hours, asset_id=1.0):
     sweep_depth_range = np.zeros(n, dtype=np.float32)
     reclaim_strength_range = np.zeros(n, dtype=np.float32)
 
-    # --- Liq features (3) ---
+    # --- Liq features (5) ---
+    n_liq_swept_norm = np.zeros(n, dtype=np.float32)
     weighted_liq_swept = np.zeros(n, dtype=np.float32)
     max_leverage_norm = np.zeros(n, dtype=np.float32)
     liq_cascade_depth = np.zeros(n, dtype=np.float32)
+    n_swings_with_liq_norm = np.zeros(n, dtype=np.float32)
 
-    # --- SFP candle features (2) ---
+    # --- SFP candle features (4) ---
+    body_ratio = np.zeros(n, dtype=np.float32)
     wick_ratio = np.zeros(n, dtype=np.float32)
     zone_sl_dist = np.zeros(n, dtype=np.float32)
+    zone_tp_dist = np.zeros(n, dtype=np.float32)
 
     for i, sig in signal_map.items():
         r = sig.range_ref
@@ -117,14 +124,17 @@ def build_features(df, actions, signal_map, tf_hours, asset_id=1.0):
         reclaim_strength_range[i] = sig.reclaim_strength_range
 
         # Liq features
+        n_liq_swept_norm[i] = min(sig.n_liq_swept, 30) / 30.0
         weighted_liq_swept[i] = min(sig.weighted_liq_swept, 3.0) / 3.0
         max_leverage_norm[i] = sig.max_leverage_swept / 100.0
         local_atr = atr[i] if atr[i] > 0 else 1e-8
         liq_cascade_depth[i] = np.clip(sig.liq_cascade_depth / local_atr, 0, 5)
+        n_swings_with_liq_norm[i] = min(sig.n_swings_with_liq, 10) / 10.0
 
         # SFP candle features
         candle_range = highs[i] - lows[i]
         if candle_range > 0:
+            body_ratio[i] = (closes[i] - opens[i]) / candle_range
             if sig.direction == 1:
                 wick_ratio[i] = (r.support.top - lows[i]) / candle_range
             else:
@@ -133,41 +143,56 @@ def build_features(df, actions, signal_map, tf_hours, asset_id=1.0):
         if entry > 0:
             if sig.direction == 1:
                 zone_sl_dist[i] = (entry - r.support.bottom) / entry
+                zone_tp_dist[i] = (r.resistance.top - entry) / entry
             else:
                 zone_sl_dist[i] = (r.resistance.top - entry) / entry
+                zone_tp_dist[i] = (entry - r.support.bottom) / entry
 
     feat["range_height_pct"] = range_height_pct
     feat["range_age"] = range_age
     feat["sweep_depth_range"] = sweep_depth_range
     feat["reclaim_strength_range"] = reclaim_strength_range
 
+    feat["n_liq_swept_norm"] = n_liq_swept_norm
     feat["weighted_liq_swept"] = weighted_liq_swept
     feat["max_leverage_norm"] = max_leverage_norm
     feat["liq_cascade_depth"] = liq_cascade_depth
+    feat["n_swings_with_liq"] = n_swings_with_liq_norm
 
+    feat["body_ratio"] = body_ratio
     feat["wick_ratio"] = wick_ratio
     feat["zone_sl_dist"] = zone_sl_dist
+    feat["zone_tp_dist"] = zone_tp_dist
 
-    # --- Context features (3) ---
+    # --- Context features (6) ---
+    feat["rsi"] = df["rsi"].values / 100.0 if "rsi" in df.columns else 0.5
     feat["trend_strength"] = ((df["Close"] - df["ema_21"]) / df["Close"]).values if "ema_21" in df.columns else 0.0
     feat["ms_alignment"] = np.zeros(n, dtype=np.float32)
+    feat["ms_strength"] = ms_strength_arr
 
     for i, sig in signal_map.items():
         feat.at[i, "ms_alignment"] = sig.ms_alignment
 
+    feat["tf_hours"] = tf_hours / 4.0
     feat["asset_id"] = asset_id
 
-    # --- Range fingerprint features (3) ---
+    # --- Range fingerprint features (5) ---
+    signal_type_arr = np.zeros(n, dtype=np.float32)
     is_recaptured_arr = np.zeros(n, dtype=np.float32)
+    is_nested_arr = np.zeros(n, dtype=np.float32)
     touch_symmetry_arr = np.zeros(n, dtype=np.float32)
     range_position_arr = np.zeros(n, dtype=np.float32)
 
     for i, sig in signal_map.items():
+        signal_type_arr[i] = float(sig.signal_type)
         is_recaptured_arr[i] = sig.is_recaptured
+        is_nested_arr[i] = sig.is_nested
         touch_symmetry_arr[i] = sig.touch_symmetry
         range_position_arr[i] = sig.range_position
 
+    feat["signal_type"] = signal_type_arr
     feat["is_recaptured"] = is_recaptured_arr
+    feat["is_nested"] = is_nested_arr
     feat["touch_symmetry"] = touch_symmetry_arr
     feat["range_position"] = range_position_arr
 
@@ -195,6 +220,7 @@ def build_features(df, actions, signal_map, tf_hours, asset_id=1.0):
     feat["reclaim_strength_range"] = feat["reclaim_strength_range"].clip(0, 2.0)
     feat["range_age"] = feat["range_age"].clip(0, 5.0)
     feat["zone_sl_dist"] = feat["zone_sl_dist"].clip(0, 0.10)
+    feat["zone_tp_dist"] = feat["zone_tp_dist"].clip(0, 0.15)
 
     return feat, actions, signal_map_shifted
 
