@@ -265,7 +265,8 @@ def predict_signals(feat_values, actions, model, recent_start_idx=0, tf_key="4h"
             bs = x_t.shape[0]
             a_ids = torch.LongTensor([ASSET_ID_MAP.get(asset_id, 0)] * bs).to(device)
             t_ids = torch.LongTensor([TF_ID_MAP.get(tf_key, 0)] * bs).to(device)
-            out = model(x_t, asset_ids=a_ids, tf_ids=t_ids)  # (B, 6)
+            d_ids = torch.LongTensor([actions[i] for i in batch_idx]).to(device)
+            out = model(x_t, asset_ids=a_ids, tf_ids=t_ids, direction_ids=d_ids)  # (B, 4)
             probs = torch.sigmoid(out[:, 0])  # classification gate
             all_probs.extend(probs.cpu().numpy().tolist())
 

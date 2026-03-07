@@ -89,7 +89,8 @@ def predict_signals(model, scaler, feat_values, actions, signal_map_shifted):
                 continue
             x = scaled[bar_idx - window + 1: bar_idx + 1]
             x_t = torch.FloatTensor(x).unsqueeze(0).to(device)
-            out = model(x_t, asset_ids=a_id, tf_ids=t_id).squeeze(0).cpu()  # (6,)
+            d_id = torch.LongTensor([actions[bar_idx]]).to(device)
+            out = model(x_t, asset_ids=a_id, tf_ids=t_id, direction_ids=d_id).squeeze(0).cpu()  # (4,)
             p_win = torch.sigmoid(out[0]).item()
             tp1_dist = out[1].item()
             tp2_dist = out[2].item()

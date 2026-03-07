@@ -31,6 +31,7 @@ from server.config import (
     SIGNAL_EXPIRY_BARS,
     SIGNAL_HORIZON,
     TIMEFRAMES,
+    TTP_TRAILING,
     WINDOW,
     WINDOW_BY_TF,
 )
@@ -73,13 +74,23 @@ def _save_live_signals():
     Path(LIVE_SIGNALS_PATH).write_text(json.dumps(live_signals, indent=2))
 
 
+def _get_trailing_pct(ttp: float) -> float:
+    """Map model TTP prediction to trailing stop percentage."""
+    if ttp <= TTP_TRAILING["early"]["max_ttp"]:
+        return TTP_TRAILING["early"]["trail_pct"]
+    elif ttp <= TTP_TRAILING["mid"]["max_ttp"]:
+        return TTP_TRAILING["mid"]["trail_pct"]
+    else:
+        return TTP_TRAILING["late"]["trail_pct"]
+
+
 def _resolve_open_signals(job_key: str, candles: list[dict]):
     """Check open/partial live signals against candle data to determine outcomes.
 
     Partial TP execution flow:
-      open → TP1 hit → partial (SL moves to breakeven)
+      open → TP1 hit → partial (trailing stop engages)
         → TP2 hit → win (0.5*TP1_R + 0.5*TP2_R)
-        → stopped at BE → partial_win (0.5*TP1_R)
+        → trailing stop hit → partial_win (0.5*TP1_R + 0.5*trailing_R)
     """
     changed = False
     for sig in live_signals:
@@ -148,16 +159,32 @@ def _resolve_open_signals(job_key: str, candles: list[dict]):
                     break
 
         if sig["status"] == "partial":
-            # Phase 2: TP1 already hit, trailing with BE stop. Check TP2 or BE stop.
+            # Phase 2: TP1 already hit, trailing stop engages. Check TP2 or trail stop.
             partial_time = sig.get("partial_time", sig_time)
             sl_original = sig.get("sl_price_original", sl_price)
             tp1_r = abs(tp1_price - entry) / (abs(entry - sl_original) + 1e-8)
+            ttp = sig.get("ttp", 0.5)
+            trail_pct = _get_trailing_pct(ttp)
+            best_price = sig.get("best_price", entry)
             bars_after = 0
 
             for c in candles:
                 if c["time"] <= partial_time:
                     continue
                 bars_after += 1
+
+                # Update best price
+                if is_long:
+                    best_price = max(best_price, c["high"])
+                else:
+                    best_price = min(best_price, c["low"])
+                sig["best_price"] = best_price
+
+                # Compute trailing SL
+                if is_long:
+                    trail_sl = best_price * (1 - trail_pct)
+                else:
+                    trail_sl = best_price * (1 + trail_pct)
 
                 if is_long:
                     if c["high"] >= tp2_price:
@@ -168,10 +195,11 @@ def _resolve_open_signals(job_key: str, candles: list[dict]):
                         sig["resolved_at"] = c["time"]
                         changed = True
                         break
-                    if c["low"] <= entry:
-                        # Stopped at breakeven: 0.5 * TP1_R
+                    if c["low"] <= trail_sl:
+                        # Trailing stop hit
+                        trailing_r = (trail_sl - entry) / (entry - sl_original + 1e-8)
                         sig["status"] = "partial_win"
-                        sig["actual_r"] = round(0.5 * tp1_r, 2)
+                        sig["actual_r"] = round(0.5 * tp1_r + 0.5 * max(trailing_r, 0), 2)
                         sig["resolved_at"] = c["time"]
                         changed = True
                         break
@@ -183,9 +211,11 @@ def _resolve_open_signals(job_key: str, candles: list[dict]):
                         sig["resolved_at"] = c["time"]
                         changed = True
                         break
-                    if c["high"] >= entry:
+                    if c["high"] >= trail_sl:
+                        # Trailing stop hit
+                        trailing_r = (entry - trail_sl) / (sl_original - entry + 1e-8)
                         sig["status"] = "partial_win"
-                        sig["actual_r"] = round(0.5 * tp1_r, 2)
+                        sig["actual_r"] = round(0.5 * tp1_r + 0.5 * max(trailing_r, 0), 2)
                         sig["resolved_at"] = c["time"]
                         changed = True
                         break
@@ -197,7 +227,7 @@ def _resolve_open_signals(job_key: str, candles: list[dict]):
                         remaining_r = (last_close - entry) / (entry - sl_original + 1e-8)
                     else:
                         remaining_r = (entry - last_close) / (sl_original - entry + 1e-8)
-                    sig["status"] = "partial_win" if remaining_r >= 0 else "partial_win"
+                    sig["status"] = "partial_win"
                     sig["actual_r"] = round(0.5 * tp1_r + 0.5 * max(remaining_r, 0), 2)
                     sig["resolved_at"] = c["time"]
                     changed = True
@@ -283,7 +313,7 @@ async def run_job(asset_key: str, tf_key: str):
                 if bar_idx not in map_shifted:
                     continue
 
-                result = predict_bar(model, scaled, bar_idx, tf_key=tf_key, asset_id=asset_id)
+                result = predict_bar(model, scaled, bar_idx, tf_key=tf_key, asset_id=asset_id, direction=action)
                 direction = "LONG" if action == 1 else "SHORT"
                 bars_ago = n_trimmed - 1 - bar_idx
                 n_scored += 1

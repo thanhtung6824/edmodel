@@ -18,6 +18,12 @@ WINDOW = max(WINDOW_BY_TF.values())  # 120, used as fallback/max
 SIGNAL_EXPIRY_BARS = 3
 SIGNAL_HORIZON = 18  # bars to track outcome (matches backtest)
 
+TTP_TRAILING = {
+    "early": {"max_ttp": 0.3, "trail_pct": 0.003},   # 0.3% trail
+    "mid":   {"max_ttp": 0.6, "trail_pct": 0.006},    # 0.6% trail
+    "late":  {"trail_pct": 0.010},                      # 1.0% trail
+}
+
 # Liq+Range+SFP model
 MODEL_PATH = "best_model_liq_range_sfp.pth"
 SCALER_PATH = "liq_range_sfp_scaler.joblib"

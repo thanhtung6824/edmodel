@@ -112,8 +112,9 @@ for i in range(window - 1, len(feat_values)):
     TF_ID_MAP = {"15m": 0, "1h": 1, "4h": 2}
     a_id = torch.LongTensor([ASSET_ID_MAP.get(asset_id, 0)])
     t_id = torch.LongTensor([TF_ID_MAP.get(tf_key, 0)])
+    d_id = torch.LongTensor([action])
     with torch.no_grad():
-        out = model(x_t, asset_ids=a_id, tf_ids=t_id).squeeze(0)  # (6,)
+        out = model(x_t, asset_ids=a_id, tf_ids=t_id, direction_ids=d_id).squeeze(0)  # (4,)
     p_win = torch.sigmoid(out[0]).item()
     tp1_dist = out[1].item()
     tp2_dist = out[2].item()

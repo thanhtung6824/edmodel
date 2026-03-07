@@ -446,8 +446,6 @@ def evaluate(model, test_loaders):
     all_cls_prob = []
     all_tp1_pred = []
     all_tp2_pred = []
-    all_tau1 = []
-    all_tau2 = []
     all_quality = []
     all_mfe = []
     all_sl = []
@@ -461,13 +459,12 @@ def evaluate(model, test_loaders):
                 q_t = q.to(device).float()
                 asset_id = asset_id.to(device)
                 tf_id = tf_id.to(device)
+                direction = direction.to(device)
 
-                out = model(x, asset_ids=asset_id, tf_ids=tf_id)  # (B, 6)
+                out = model(x, asset_ids=asset_id, tf_ids=tf_id, direction_ids=direction)  # (B, 4)
                 cls_logit = out[:, 0]
                 tp1_pred = out[:, 1]
                 tp2_pred = out[:, 2]
-                tau1_pred = out[:, 3]
-                tau2_pred = out[:, 4]
 
                 cls_loss = nn.functional.binary_cross_entropy_with_logits(cls_logit, q_t)
                 total_loss += cls_loss.item()
@@ -476,8 +473,6 @@ def evaluate(model, test_loaders):
                 all_cls_prob.append(torch.sigmoid(cls_logit).cpu())
                 all_tp1_pred.append(tp1_pred.cpu())
                 all_tp2_pred.append(tp2_pred.cpu())
-                all_tau1.append(tau1_pred.cpu())
-                all_tau2.append(tau2_pred.cpu())
                 all_quality.append(q.cpu())
                 all_mfe.append(mfe.cpu())
                 all_sl.append(sl.cpu())
@@ -485,8 +480,6 @@ def evaluate(model, test_loaders):
     cls_prob = torch.cat(all_cls_prob)    # (N,)
     tp1_pred = torch.cat(all_tp1_pred)   # (N,)
     tp2_pred = torch.cat(all_tp2_pred)   # (N,)
-    tau1 = torch.cat(all_tau1)           # (N,)
-    tau2 = torch.cat(all_tau2)           # (N,)
     quality = torch.cat(all_quality)     # (N,)
     mfe = torch.cat(all_mfe)            # (N,)
     sl = torch.cat(all_sl)              # (N,)
@@ -494,9 +487,7 @@ def evaluate(model, test_loaders):
     base_wr = (quality == 1).float().mean().item() * 100
     avg_tp1_all = tp1_pred.mean().item() * 100
     avg_tp2_all = tp2_pred.mean().item() * 100
-    avg_tau1 = tau1.mean().item()
-    avg_tau2 = tau2.mean().item()
-    print(f"    Base WR: {base_wr:.0f}% | Pred TP1: {avg_tp1_all:.2f}% | Pred TP2: {avg_tp2_all:.2f}% | tau1: {avg_tau1:.3f} | tau2: {avg_tau2:.3f}")
+    print(f"    Base WR: {base_wr:.0f}% | Pred TP1: {avg_tp1_all:.2f}% | Pred TP2: {avg_tp2_all:.2f}%")
 
     results = {}
     for thresh in [0.3, 0.4, 0.5, 0.6, 0.7]:
@@ -592,31 +583,28 @@ def train():
                 ttp_t = ttp.to(device).float()   # (B,)
                 asset_id = asset_id.to(device)
                 tf_id = tf_id.to(device)
+                direction = direction.to(device)
 
-                out = model(x, asset_ids=asset_id, tf_ids=tf_id)  # (B, 6)
+                out = model(x, asset_ids=asset_id, tf_ids=tf_id, direction_ids=direction)  # (B, 4)
                 cls_logit = out[:, 0]             # (B,)
                 tp1_pred = out[:, 1]              # (B,)
                 tp2_pred = out[:, 2]              # (B,)
-                tau1_pred = out[:, 3]             # (B,)
-                tau2_pred = out[:, 4]             # (B,)
-                ttp_pred = out[:, 5]              # (B,)
+                ttp_pred = out[:, 3]              # (B,)
 
                 # Classification loss: BCE on quality gate
                 cls_loss = nn.functional.binary_cross_entropy_with_logits(
                     cls_logit, q_t, pos_weight=pos_weight,
                 )
 
-                # Regression loss: adaptive quantile on MFE, only for profitable signals
+                # Regression loss: fixed quantile on MFE, only for profitable signals
                 profitable_mask = q_t > 0.5
                 if profitable_mask.any():
                     mfe_prof = mfe_t[profitable_mask]
                     tp1_prof = tp1_pred[profitable_mask]
                     tp2_prof = tp2_pred[profitable_mask]
-                    tau1_prof = tau1_pred[profitable_mask]
-                    tau2_prof = tau2_pred[profitable_mask]
                     reg_loss = (
-                        quantile_loss_adaptive(tp1_prof, mfe_prof, tau1_prof) +
-                        quantile_loss_adaptive(tp2_prof, mfe_prof, tau2_prof)
+                        quantile_loss(tp1_prof, mfe_prof, tau=0.15) +
+                        quantile_loss(tp2_prof, mfe_prof, tau=0.40)
                     )
 
                     # TTP loss: smooth L1, profitable-only

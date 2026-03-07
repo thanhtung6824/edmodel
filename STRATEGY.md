@@ -257,14 +257,22 @@ All features are computed per bar after dropping 30 warmup bars (for ATR-14, MA-
 
 **File:** `src/models/liq_range_sfp_model.py`
 
-`LiqRangeSFPClassifier` — 6-head model with FiLM conditioning (~29K parameters).
+`LiqRangeSFPClassifier` — 4-head model with direction-conditioned FiLM, positional encoding, and 2-layer transformer (~35K parameters).
 
 ```
 Input: (batch, window, 33)
   |
 Linear(33 -> 32) + ReLU            # per-bar projection
   |
-MultiheadAttention(32, heads=1)    # self-attention across bars
++ pos_embed (learnable, 1×window×32)  # positional encoding
+  |
+MultiheadAttention(32, heads=1)    # self-attention layer 1
+  + residual + LayerNorm
+  |
+FFN: Linear(32->64) -> ReLU -> Linear(64->32)
+  + residual + LayerNorm
+  |
+MultiheadAttention(32, heads=2)    # self-attention layer 2
   + residual + LayerNorm
   |
 FFN: Linear(32->64) -> ReLU -> Linear(64->32)
@@ -279,49 +287,41 @@ Concat -> (96)
   |
   +---> cls_head:  Linear(96->32) -> ReLU -> Dropout(0.15) -> Linear(32->1)  ->  logit     -> sigmoid -> P(profitable)
   |
-  +---> tp1_head:  Linear(96->32) -> ReLU -> Dropout(0.15) -> Linear(32->1)  ->  softplus  -> TP1 distance (adaptive quantile)
+  +---> tp1_head:  Linear(96->32) -> ReLU -> Dropout(0.15) -> Linear(32->1)  ->  softplus  -> TP1 distance (fixed τ=0.15)
   |
-  +---> tp2_head:  Linear(96->32) -> ReLU -> Dropout(0.15) -> Linear(32->1)  ->  softplus  -> TP2 distance (adaptive quantile)
-  |
-  +--- FiLM conditioning on cls/tp1/tp2 (scale ∈ [0.7, 1.3], bias ∈ [-0.1, 0.1])
-  |
-  +---> tau1_head: Linear(96->32) -> ReLU -> Linear(32->1) -> sigmoid * 0.20 + 0.15  ->  tau1 ∈ [0.15, 0.35]
-  |
-  +---> tau2_head: Linear(96->32) -> ReLU -> Linear(32->1) -> sigmoid * 0.20 + 0.40  ->  tau2 ∈ [0.40, 0.60]
+  +---> tp2_head:  Linear(96->32) -> ReLU -> Dropout(0.15) -> Linear(32->1)  ->  softplus  -> TP2 distance (fixed τ=0.40)
   |
   +---> ttp_head:  Linear(96->32) -> ReLU -> Dropout(0.15) -> Linear(32->1)  ->  sigmoid  -> time-to-peak ∈ [0, 1]
+  |
+  +--- FiLM conditioning on all 4 heads (scale ∈ [0.7, 1.3], bias ∈ [-0.1, 0.1])
 ```
 
-### FiLM Conditioning
+### FiLM Conditioning (Direction-Aware)
 **File:** `src/models/liq_range_sfp_model.py:ConditioningModule`
 
-Applies per-asset/TF scale and bias to cls, tp1, tp2 heads (NOT tau or ttp):
-- Asset embedding (dim=8) + TF embedding (dim=4) → Linear(12→16→6) → constrained scale + bias
+Applies per-asset/TF/direction scale and bias to all 4 heads:
+- Asset embedding (dim=8) + TF embedding (dim=4) + Direction embedding (dim=4) → Linear(16→16→8) → constrained scale + bias
+- Direction embedding: 0=none, 1=long, 2=short — allows asymmetric long/short TP targets
 - Scale ∈ [0.7, 1.3] via `0.7 + 0.6 * sigmoid(x)`, bias ∈ [-0.1, 0.1] via `0.1 * tanh(x)`
-- Tau and ttp heads are NOT FiLM-conditioned — they must stay within their sigmoid-constrained ranges
 
-### Adaptive Tau Heads
-Two heads predict per-sample quantile levels for the quantile regression loss:
-- tau1 ∈ [0.15, 0.35] — controls how conservative TP1 is
-- tau2 ∈ [0.40, 0.60] — controls how aggressive TP2 is
-- Gradient flows from quantile loss through tau — self-supervised
-- In practice, both tau heads pin to their minimums (tau1≈0.15, tau2≈0.40), which produces better TP WR
+### Positional Encoding
+Learnable positional embeddings added after bar projection:
+- `pos_embed = nn.Parameter(torch.randn(1, window, 32) * 0.02)`
+- Allows the model to distinguish temporal position of patterns within the window
 
 ### Time-to-Peak Head
 Predicts when the MFE peak occurs within the forward horizon:
 - Label: `peak_bar / horizon` ∈ [0, 1]
 - Trained with smooth L1 loss (weight=0.5), only on profitable signals
-- Used by server for time-aware position management
+- Used by server for TTP-based trailing stop (see Section 10)
 
-**Output (B, 6):**
+**Output (B, 4):**
 - `[0]` P(profitable) logit — classification gate (apply sigmoid externally)
-- `[1]` TP1 distance — conservative (softplus, adaptive quantile)
-- `[2]` TP2 distance — aggressive (softplus, adaptive quantile)
-- `[3]` tau1 — adaptive quantile for TP1 ∈ [0.15, 0.35]
-- `[4]` tau2 — adaptive quantile for TP2 ∈ [0.40, 0.60]
-- `[5]` ttp — time-to-peak ∈ [0, 1] (sigmoid)
+- `[1]` TP1 distance — conservative (softplus, fixed quantile τ=0.15)
+- `[2]` TP2 distance — aggressive (softplus, fixed quantile τ=0.40)
+- `[3]` ttp — time-to-peak ∈ [0, 1] (sigmoid)
 
-**Window sizes** (no positional encoding — fully agnostic):
+**Window sizes** (with learnable positional encoding):
 
 | TF | Window | Lookback |
 |---|---|---|
@@ -384,9 +384,9 @@ loss = cls_loss + reg_loss + 0.5 * ttp_loss
 - `BCEWithLogitsLoss` on quality target with `pos_weight = n_neg / n_pos`
 
 **Regression (TP prediction):**
-- Adaptive quantile (pinball) loss on MFE target
-- TP1: τ predicted by tau1 head (∈ [0.15, 0.35]) — gradient flows through tau
-- TP2: τ predicted by tau2 head (∈ [0.40, 0.60]) — gradient flows through tau
+- Fixed quantile (pinball) loss on MFE target
+- TP1: fixed τ=0.15 — conservative target, higher win rate
+- TP2: fixed τ=0.40 — aggressive target, larger moves
 - **Only computed for profitable signals** (quality=1) — no regression signal from losing trades
 
 **Time-to-Peak:**
@@ -428,18 +428,59 @@ Per scheduled job (each asset x TF):
 - **Expiry**: 3 bars
 - **Resolution horizon**: 18 bars (TP hit, SL hit, or mark-to-market at expiry)
 
-### Partial TP Execution
+### Partial TP Execution with TTP Trailing Stop
 When TP1 is hit before TP2:
 1. Signal status changes from `open` → `partial`
-2. SL moves to breakeven (entry price)
+2. **TTP-based trailing stop** engages (replaces fixed breakeven):
+   - Model's TTP prediction determines trail tightness:
+     - Early peak (ttp ≤ 0.3): 0.3% trail — tight, lock in gains quickly
+     - Mid peak (ttp ≤ 0.6): 0.6% trail — moderate room
+     - Late peak (ttp > 0.6): 1.0% trail — wide, let it run
+   - `best_price` tracks the high-water mark (persisted across job runs)
+   - Trail SL = `best_price × (1 - trail_pct)` for longs, `× (1 + trail_pct)` for shorts
 3. If TP2 is hit → `win` (reward = 0.5 × TP1_R + 0.5 × TP2_R)
-4. If stopped at breakeven → `partial_win` (reward = 0.5 × TP1_R)
-5. `partial_win` counts as a win in stats
+4. If trailing stop hit → `partial_win` (reward = 0.5 × TP1_R + 0.5 × max(trailing_R, 0))
+5. If horizon expires → `partial_win` (close at market)
+6. `partial_win` counts as a win in stats
+
+**Config** (`server/config.py:TTP_TRAILING`):
+```python
+TTP_TRAILING = {
+    "early": {"max_ttp": 0.3, "trail_pct": 0.003},   # 0.3% trail
+    "mid":   {"max_ttp": 0.6, "trail_pct": 0.006},    # 0.6% trail
+    "late":  {"trail_pct": 0.010},                      # 1.0% trail
+}
+```
 
 ---
 
-## Current Performance (all assets, all TFs)
+## Current Performance — v3 (all assets, all TFs, 2024 OOS)
 
+```
+P > 0.3: 12612 trades | Gate WR: 59% | TP1: 51%WR EV=+0.253% | TP2: 34%WR EV=-0.059%
+P > 0.5:  9287 trades | Gate WR: 66% | TP1: 56%WR EV=+0.465% | TP2: 37%WR EV=+0.184%
+P > 0.7:  5311 trades | Gate WR: 74% | TP1: 62%WR EV=+0.758% | TP2: 42%WR EV=+0.527%
+```
+
+### Per-Asset Best EV (P>0.7, 2024 OOS benchmark)
+| Asset/TF | Trades | Gate WR | TP1 WR | TP1 EV% | Total R |
+|----------|--------|---------|--------|---------|---------|
+| SOL/4h | 725 | 82% | 73% | +1.58% | +1158R |
+| ETH/4h | 695 | 79% | 71% | +1.20% | +782R |
+| SOL/1h | 2,337 | 80% | 63% | +1.03% | +1921R |
+| BTC/4h | 409 | 79% | 76% | +0.97% | +338R |
+| SOL/15m | 1,233 | 83% | 73% | +0.86% | +940R |
+| ETH/1h | 1,504 | 74% | 59% | +0.70% | +924R |
+| ETH/15m | 530 | 76% | 61% | +0.51% | +330R |
+| GOLD/4h | 59 | 70% | 93% | +0.53% | +24R |
+| BTC/1h | 972 | 66% | 56% | +0.37% | +419R |
+| GOLD/1h | 72 | 68% | 99% | +0.26% | +5R |
+| GOLD/15m | 46 | 63% | 70% | +0.25% | +26R |
+| BTC/15m | 233 | 68% | 52% | +0.20% | +106R |
+
+All 12 asset/TF combos are **positive EV** at their best threshold.
+
+### Previous Performance (v2: adaptive tau, no pos encoding, 1-layer, no direction FiLM)
 ```
 P > 0.3: 14134 trades | Gate WR: 58% | TP1: 46%WR EV=+0.14% | TP2: 29%WR EV=-0.23%
 P > 0.5: 9505 trades  | Gate WR: 68% | TP1: 53%WR EV=+0.49% | TP2: 34%WR EV=+0.16%
@@ -453,41 +494,44 @@ P > 0.5: 9478 trades  | Gate WR: 68% | TP1: 49%WR EV=+0.47% | TP2: 17%WR EV=-0.3
 P > 0.7: 4035 trades  | Gate WR: 79% | TP1: 56%WR EV=+0.92% | TP2: 20%WR EV=+0.13%
 ```
 
-### Key Improvements (v1 → v2)
-- **TP2 WR**: 14-20% → 29-40% (doubled across all thresholds)
-- **TP2 EV**: negative at all thresholds → positive at P>0.5+
-- **TP1 WR**: 43-56% → 46-61% (steady improvement)
-- **Both EVs positive** at P>0.5 — both TP targets are now usable
+### Key Improvements (v2 → v3)
+- **TP1 WR**: 46-61% → 51-62% (improved gate discrimination)
+- **TP2 EV**: now positive at P>0.5+ across most asset/TF combos
+- **Direction FiLM**: enables asymmetric long/short TP targets
+- **Positional encoding**: model can distinguish temporal position of patterns
+- **2-layer transformer**: deeper feature extraction before pooling
+- **Tau heads removed**: fixed τ=0.15/0.40 matches what adaptive heads converged to, saves 6K params
+- **TTP trailing stop**: model's time-to-peak prediction now drives exit logic
 
 ---
 
-## Implemented Improvements (v2)
+## Implemented Improvements
 
-All 8 improvements from v1 were implemented simultaneously (required full retrain):
+### v3 (current)
+4 architecture changes + server-side trailing stop:
 
-1. ~~**TP2 quantile too aggressive**~~ — **Done.** Adaptive tau2 head pins at τ≈0.40 (was fixed at 0.7). TP2 WR doubled.
-2. ~~**MFE+ gap**~~ — **Done.** Adaptive tau1 head pins at τ≈0.15 (was fixed at 0.3). More trades reach TP1.
-3. ~~**Adaptive τ per signal context**~~ — **Done.** tau1/tau2 heads predict per-sample quantile. In practice both pin to minimums, which is optimal behavior.
-4. ~~**Partial TP execution**~~ — **Done.** Server implements TP1→partial→TP2/breakeven flow.
-5. ~~**Per-asset/TF model heads**~~ — **Done.** FiLM conditioning (asset+TF embeddings → scale+bias on cls/tp1/tp2 heads).
-6. ~~**Direction-aware features**~~ — **Done.** Added `direction_feat` (+1 long, -1 short).
-7. ~~**Volume profile features**~~ — **Done.** Added `vwap_distance` and `volume_imbalance`.
-8. ~~**Multi-horizon MFE**~~ — **Done.** Time-to-peak head predicts when MFE peak occurs.
+1. ~~**Remove tau heads**~~ — **Done.** Adaptive tau heads always pinned at floor values (wasted 6,274 params). Replaced with fixed τ=0.15/0.40 in loss function.
+2. ~~**Positional encoding**~~ — **Done.** Learnable `pos_embed` (1×window×32) after bar projection. Model can now distinguish temporal position of patterns.
+3. ~~**2nd transformer layer**~~ — **Done.** Added `attn2` (2 heads) + `ffn2` + norms. Deeper feature extraction before pooling.
+4. ~~**Direction-conditioned FiLM**~~ — **Done.** Added `direction_emb` (Embedding(3, 4)) to ConditioningModule. FiLM input expanded from 12→16. Enables asymmetric long/short TP targets.
+5. ~~**TTP trailing stop**~~ — **Done.** Server uses model TTP prediction to set trailing stop tightness after TP1 hit (early peak → tight trail, late peak → wide trail).
+
+### v2
+1. ~~**Adaptive tau heads**~~ — tau1/tau2 predict per-sample quantile (removed in v3 — always pinned at minimums).
+2. ~~**FiLM conditioning**~~ — asset+TF embeddings → scale+bias on cls/tp1/tp2 heads.
+3. ~~**Partial TP execution**~~ — TP1→partial→TP2/breakeven flow (upgraded to trailing stop in v3).
+4. ~~**Direction-aware features**~~ — `direction_feat` (+1 long, -1 short).
+5. ~~**Volume profile features**~~ — `vwap_distance` and `volume_imbalance`.
+6. ~~**Time-to-peak head**~~ — predicts when MFE peak occurs (now used for trailing stop in v3).
 
 ## Potential Next Improvements
 
-1. **Tau regularization** — both adaptive tau heads pin at their floor values (tau1=0.15, tau2=0.40). Adding a regularization term (e.g., entropy bonus or KL toward a target distribution) could encourage the model to actually vary tau per sample, producing context-adaptive TP targets.
+1. **Multi-horizon training** — current MFE uses fixed 18-bar horizon. Training with multiple horizons (6, 12, 18, 36) and letting the model select optimal horizon per signal could capture both quick scalps and extended moves.
 
-2. **Trailing stop using TTP** — the time-to-peak head is trained but not yet used for exit logic. If TTP predicts an early peak (ttp < 0.3), could tighten trailing stop after TP1 instead of waiting for TP2.
+2. **15m timeframe performance** — 15m shows weaker performance across all assets. Could benefit from TF-specific training hyperparameters (e.g., more aggressive filtering, tighter SL, or shorter horizon).
 
-3. **Multi-horizon training** — current MFE uses fixed 18-bar horizon. Training with multiple horizons (6, 12, 18, 36) and letting the model select optimal horizon per signal could capture both quick scalps and extended moves.
+3. **Ensemble/stacking** — train multiple models with different random seeds, use consensus voting for the gate and average for TP regression. Would reduce variance at the cost of inference speed.
 
-4. **Asymmetric long/short heads** — crypto markets have asymmetric distributions (sharper drops, slower grinds up). Separate TP/tau heads for longs vs shorts could capture this.
+4. **Online learning** — periodically fine-tune on recent signals with known outcomes to adapt to regime changes. Would need careful implementation to prevent catastrophic forgetting.
 
-5. **15m timeframe performance** — 15m shows weaker performance (38% WR at P>0.5). Could benefit from TF-specific training hyperparameters (e.g., more aggressive filtering, tighter SL, or shorter horizon).
-
-6. **Ensemble/stacking** — train multiple models with different random seeds, use consensus voting for the gate and average for TP regression. Would reduce variance at the cost of inference speed.
-
-7. **Online learning** — periodically fine-tune on recent signals with known outcomes to adapt to regime changes. Would need careful implementation to prevent catastrophic forgetting.
-
-8. **Order book features** — if available, add spread, depth imbalance, and trade flow metrics at signal time. Would require live data integration but could significantly improve gate accuracy.
+5. **Order book features** — if available, add spread, depth imbalance, and trade flow metrics at signal time. Would require live data integration but could significantly improve gate accuracy.
