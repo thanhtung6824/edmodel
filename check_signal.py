@@ -75,7 +75,7 @@ closes = df["Close"].values
 opens = df["Open"].values
 volumes_arr = df["Volume"].values if "Volume" in df.columns else None
 
-actions, quality, mfe, sl_labels, ttp_labels, swept_levels, signal_map = generate_labels(
+actions, quality, mfe, sl_labels, ttp_labels, swept_levels, signal_map, _mae = generate_labels(
     highs, lows, closes, opens, volumes=volumes_arr, tf_key=tf_key,
 )
 

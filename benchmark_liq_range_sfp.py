@@ -30,7 +30,7 @@ WINDOW_BY_TF = {"15m": 120, "1h": 48, "4h": 30}
 HORIZON_BY_TF = {"15m": 36, "1h": 18, "4h": 18}
 MODEL_FILE = "best_model_liq_range_sfp.pth"
 SCALER_FILE = "liq_range_sfp_scaler.joblib"
-N_FEATURES = 37
+N_FEATURES = 27
 THRESHOLDS = [0.3, 0.4, 0.5, 0.6, 0.7]
 
 ASSETS = {
@@ -228,7 +228,7 @@ def run_benchmark():
 
             label = f"{asset_name.upper()}/{tf_key}"
 
-            actions, quality, mfe, sl_labels, ttp_labels, swept_levels, signal_map = generate_labels(
+            actions, quality, mfe, sl_labels, ttp_labels, swept_levels, signal_map, _mae = generate_labels(
                 df["High"].values, df["Low"].values,
                 df["Close"].values, df["Open"].values,
                 volumes=df["Volume"].values if "Volume" in df.columns else None,

@@ -34,6 +34,9 @@ args = sys.argv[1:]
 RESUME = "--resume" in args
 if RESUME:
     args.remove("--resume")
+WALK_FORWARD = "--walk-forward" in args
+if WALK_FORWARD:
+    args.remove("--walk-forward")
 
 if "--assets" in args:
     idx = args.index("--assets")
@@ -1220,8 +1223,13 @@ def _process_one_tf(item):
     n_bars = len(feat_values)
     asset_id_arr = np.full(n_bars, ASSET_ID_MAP.get(asset_id, 0), dtype=np.int64)
     tf_id_arr = np.full(n_bars, TF_ID_MAP.get(tf_key, 0), dtype=np.int64)
+    # Extract timestamps for walk-forward splitting
+    timestamps = None
+    if "timestamp" in df.columns:
+        timestamps = df["timestamp"].values[drop_n:]
+
     split_idx = int(n_bars * 0.8)
-    return {
+    result = {
         "tf_key": tf_key, "label": f"{asset_name}/{tf_key}",
         "n_bars": n_bars, "n_signals": total_signals, "n_profitable": n_profitable,
         "train_feat": feat_values[:split_idx], "train_actions": actions[:split_idx],
@@ -1235,9 +1243,22 @@ def _process_one_tf(item):
         "test_mae": mae_labels[split_idx:], "test_asset_ids": asset_id_arr[split_idx:],
         "test_tf_ids": tf_id_arr[split_idx:],
     }
+    # For walk-forward: include full unsplit data + timestamps
+    if timestamps is not None:
+        result["all_feat"] = feat_values
+        result["all_actions"] = actions
+        result["all_quality"] = quality
+        result["all_mfe"] = mfe
+        result["all_sl"] = sl_labels
+        result["all_ttp"] = ttp_labels
+        result["all_mae"] = mae_labels
+        result["all_asset_ids"] = asset_id_arr
+        result["all_tf_ids"] = tf_id_arr
+        result["all_timestamps"] = timestamps
+    return result
 
 
-def load_data_set():
+def load_data_set(walk_forward_fold=None):
     from multiprocessing import Pool
     work_items = []
     for asset_name in SELECTED_ASSETS:
@@ -1245,7 +1266,6 @@ def load_data_set():
         for tf in TIMEFRAMES:
             work_items.append((asset_name, cfg["prefix"], cfg["asset_id"], tf, TF_KEYS[tf], TF_HOURS[tf]))
     print(f"\nProcessing {len(work_items)} asset/TF combos...")
-    # Use multiprocessing to parallelize label generation across asset/TF combos
     from multiprocessing import Pool
     with Pool() as pool:
         results = pool.map(_process_one_tf, work_items)
@@ -1262,6 +1282,18 @@ def load_data_set():
         print(f"  {label}: {result['n_bars']} bars, {result['n_signals']} signals, "
               f"{result['n_profitable']} profitable ({result['n_profitable']/result['n_signals']*100:.0f}%)")
         tk = result["tf_key"]
+
+        # Walk-forward: re-split by timestamp
+        if walk_forward_fold is not None and "all_timestamps" in result:
+            ts = result["all_timestamps"]
+            train_end = walk_forward_fold["train_end"]
+            test_end = walk_forward_fold["test_end"]
+            train_mask = ts < train_end
+            test_mask = (ts >= train_end) & (ts < test_end)
+            for prefix_key in ["feat", "actions", "quality", "mfe", "sl", "ttp", "mae", "asset_ids", "tf_ids"]:
+                result[f"train_{prefix_key}"] = result[f"all_{prefix_key}"][train_mask]
+                result[f"test_{prefix_key}"] = result[f"all_{prefix_key}"][test_mask]
+
         if tk not in tf_groups:
             tf_groups[tk] = {k: [] for k in keys}
         g = tf_groups[tk]
@@ -1277,8 +1309,11 @@ def load_data_set():
     n_features = all_train.shape[1]
     scaler = StandardScaler()
     scaler.fit(all_train)
-    joblib.dump(scaler, "liq_range_sfp_scaler.joblib")
-    print(f"\nScaler fit on {len(all_train)} train bars")
+    if walk_forward_fold is None:
+        joblib.dump(scaler, "liq_range_sfp_scaler.joblib")
+        print(f"\nScaler fit on {len(all_train)} train bars, saved to liq_range_sfp_scaler.joblib")
+    else:
+        print(f"\nScaler fit on {len(all_train)} train bars (walk-forward fold)")
 
     train_loaders = {}; test_loaders = {}
     for tk, g in tf_groups.items():
@@ -1365,15 +1400,26 @@ def evaluate(model, test_loaders):
 # TRAINING (with AMP + torch.compile)
 # ============================================================================
 
-def train():
+def _print_final_results(results):
+    print(f"\n{'='*60}\nBest model — MFE regression results\n{'='*60}")
+    for thresh in sorted(results.keys()):
+        r = results[thresh]
+        if r["n"] == 0:
+            continue
+        print(f"  P>{thresh}: {r['n']} trades | WR: {r['wr']:.0f}% | "
+              f"TP1: {r['tp1_wr']:.0f}%WR TP={r.get('avg_tp1',0):.2f}% EV={r['ev1']:+.3f}% | "
+              f"TP2: {r['tp2_wr']:.0f}%WR EV={r['ev2']:+.3f}% | SL={r.get('avg_sl',0):.2f}%")
+
+
+def train_one_model(train_loaders, test_loaders, n_features, model_file, resume=False):
+    """Train a single model. Returns (model, best_score, results)."""
     t0 = time.time()
-    train_loaders, test_loaders, n_features = load_data_set()
     WINDOW = max(WINDOW_BY_TF.values())
     model = LiqRangeSFPClassifier(n_features=n_features, window=WINDOW, hidden=48).to(device)
 
-    if RESUME and os.path.exists(MODEL_FILE):
-        model.load_state_dict(torch.load(MODEL_FILE, map_location=device, weights_only=True))
-        print(f"Resumed from {MODEL_FILE}")
+    if resume and os.path.exists(model_file):
+        model.load_state_dict(torch.load(model_file, map_location=device, weights_only=True))
+        print(f"Resumed from {model_file}")
 
     # torch.compile for PyTorch 2.x speedup
     if hasattr(torch, "compile") and device == "cuda":
@@ -1396,10 +1442,10 @@ def train():
     pos_weight = torch.tensor([n_neg / max(n_pos, 1)], device=device)
     print(f"Gate: wins={n_pos}, losses={n_neg}, pos_weight={pos_weight.item():.2f}")
 
-    resume_lr = 1e-4 if RESUME else 1e-3
-    optimizer = torch.optim.AdamW(model.parameters(), lr=resume_lr, weight_decay=1e-3)
+    lr = 1e-4 if resume else 1e-3
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-3)
     total_batches = sum(len(loader) for loader in train_loaders.values())
-    scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=resume_lr, epochs=200, steps_per_epoch=total_batches)
+    scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=lr, epochs=200, steps_per_epoch=total_batches)
     scaler = torch.amp.GradScaler(enabled=USE_AMP)
 
     best_score = -float("inf"); best_loss = float("inf"); counter = 0
@@ -1464,9 +1510,8 @@ def train():
                 score += weight * r["ev1"] * min(r["n"], 200)
         if score > best_score:
             best_score = score
-            # Save uncompiled model state dict
             raw_model = model._orig_mod if hasattr(model, "_orig_mod") else model
-            torch.save(raw_model.state_dict(), MODEL_FILE)
+            torch.save(raw_model.state_dict(), model_file)
             print(f"  -> Saved best (score: {score:.1f})")
         if test_loss < best_loss:
             best_loss = test_loss; counter = 0
@@ -1475,18 +1520,80 @@ def train():
             if counter >= 50:
                 print(f"\nEarly stopping at epoch {epoch+1}"); break
 
-    # Final eval
+    # Final eval with best model
     raw_model = model._orig_mod if hasattr(model, "_orig_mod") else model
-    raw_model.load_state_dict(torch.load(MODEL_FILE, weights_only=True))
+    raw_model.load_state_dict(torch.load(model_file, weights_only=True))
     _, results = evaluate(raw_model, test_loaders)
-    print(f"\n{'='*60}\nBest model — MFE regression results\n{'='*60}")
-    for thresh in sorted(results.keys()):
-        r = results[thresh]
-        if r["n"] == 0:
+    return raw_model, best_score, results
+
+
+def train_walk_forward():
+    """Rolling walk-forward validation: train on expanding window, test on next year."""
+    t0 = time.time()
+    folds = [
+        {"train_end": "2022-01-01", "test_end": "2023-01-01", "label": "train 2018-2021, test 2022"},
+        {"train_end": "2023-01-01", "test_end": "2024-01-01", "label": "train 2018-2022, test 2023"},
+        {"train_end": "2024-01-01", "test_end": "2025-01-01", "label": "train 2018-2023, test 2024"},
+    ]
+
+    all_fold_results = []
+    for i, fold in enumerate(folds):
+        print(f"\n{'='*60}")
+        print(f"Walk-Forward Fold {i+1}/{len(folds)}: {fold['label']}")
+        print(f"{'='*60}")
+
+        fold_model_file = f"wf_model_fold_{i}.pth"
+        train_loaders, test_loaders, n_features = load_data_set(walk_forward_fold=fold)
+
+        # Check if we have test data
+        total_test = sum(len(loader.dataset) for loader in test_loaders.values())
+        if total_test == 0:
+            print(f"  No test signals for fold {i+1}, skipping")
             continue
-        print(f"  P>{thresh}: {r['n']} trades | WR: {r['wr']:.0f}% | "
-              f"TP1: {r['tp1_wr']:.0f}%WR TP={r.get('avg_tp1',0):.2f}% EV={r['ev1']:+.3f}% | "
-              f"TP2: {r['tp2_wr']:.0f}%WR EV={r['ev2']:+.3f}% | SL={r.get('avg_sl',0):.2f}%")
+
+        _, _, results = train_one_model(
+            train_loaders, test_loaders, n_features, fold_model_file,
+        )
+        all_fold_results.append((fold["label"], results))
+
+        # Clean up fold model file
+        if os.path.exists(fold_model_file):
+            os.remove(fold_model_file)
+
+    # Print walk-forward summary
+    print(f"\n{'='*60}")
+    print(f"Walk-Forward Summary")
+    print(f"{'='*60}")
+    for label, results in all_fold_results:
+        r70 = results.get(0.7, {"n": 0, "ev1": 0, "tp1_wr": 0, "wr": 0, "avg_sl": 0})
+        r50 = results.get(0.5, {"n": 0, "ev1": 0, "tp1_wr": 0, "wr": 0, "avg_sl": 0})
+        print(f"  {label}:")
+        print(f"    P>0.5: n={r50['n']} TP1_WR={r50['tp1_wr']:.0f}% EV={r50['ev1']:+.3f}%")
+        print(f"    P>0.7: n={r70['n']} TP1_WR={r70['tp1_wr']:.0f}% EV={r70['ev1']:+.3f}%")
+
+    # Average EV across folds
+    if all_fold_results:
+        for thresh in [0.5, 0.7]:
+            evs = [r.get(thresh, {"ev1": 0})["ev1"] for _, r in all_fold_results]
+            ns = [r.get(thresh, {"n": 0})["n"] for _, r in all_fold_results]
+            avg_ev = np.mean(evs)
+            total_n = sum(ns)
+            print(f"  Average EV at P>{thresh}: {avg_ev:+.3f}% ({total_n} total trades)")
+
+    print(f"\nTotal time: {time.time()-t0:.0f}s")
+
+
+def train():
+    if WALK_FORWARD:
+        train_walk_forward()
+        return
+
+    t0 = time.time()
+    train_loaders, test_loaders, n_features = load_data_set()
+    model, best_score, results = train_one_model(
+        train_loaders, test_loaders, n_features, MODEL_FILE, resume=RESUME,
+    )
+    _print_final_results(results)
     print(f"\nTotal time: {time.time()-t0:.0f}s")
     print(f"Model saved: {MODEL_FILE}")
     print(f"Scaler saved: liq_range_sfp_scaler.joblib")

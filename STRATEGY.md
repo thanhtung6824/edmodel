@@ -488,9 +488,27 @@ TTP_TRAILING = {
 
 ---
 
-## Benchmark Performance (2024 OOS, P>0.7)
+## Benchmark Performance (2024 OOS)
 
-### v4 (current) — 37 features, hidden=48, per-TF horizon, ~74K params
+### v6 (current) — 27 features, hidden=48, feature reduction from v5
+
+Aggregate results:
+```
+P > 0.3: 14172 trades | WR: 63% | TP1: 52%WR EV=+0.369% | TP2: 34%WR EV=+0.004% | SL=1.67%
+P > 0.4: 11184 trades | WR: 69% | TP1: 56%WR EV=+0.561% | TP2: 37%WR EV=+0.220% | SL=1.63%
+P > 0.5:  8666 trades | WR: 74% | TP1: 60%WR EV=+0.754% | TP2: 39%WR EV=+0.432% | SL=1.59%
+P > 0.6:  6537 trades | WR: 79% | TP1: 64%WR EV=+0.963% | TP2: 43%WR EV=+0.694% | SL=1.55%
+P > 0.7:  4571 trades | WR: 84% | TP1: 69%WR EV=+1.166% | TP2: 47%WR EV=+0.953% | SL=1.48%
+```
+
+### v5 — 37 features, SL regression head, MAE labels
+
+Aggregate results:
+```
+P > 0.7: ~12600 trades | TP1 EV=+1.034%
+```
+
+### v4 — 37 features, hidden=48, per-TF horizon, ~74K params
 
 | Asset/TF | Trades | Gate WR | TP1 WR | TP1 EV% | Total R |
 |----------|--------|---------|--------|---------|---------|
@@ -548,7 +566,13 @@ P > 0.7:  5311 trades | TP1 EV=+0.758%
 
 ## Implemented Improvements
 
-### v5 (current)
+### v6 (current)
+Feature reduction based on permutation importance audit:
+
+1. ~~**Drop 10 noisy features**~~ — **Done.** Removed features with zero/negative importance: range_touches_norm, close_position, range_concentration, vwap_distance, volume_imbalance, boundary_rejection_avg, htf_ms_direction, htf_ms_strength, vol_spike, liq_cluster_density. 37 → 27 features.
+2. ~~**Remove dead computations**~~ — **Done.** Removed vol_ma20, vwap_20, up_vol/vol_imbalance calculations that only fed dropped features.
+
+### v5
 4 improvements targeting SL prediction, validation robustness, and inference reliability:
 
 1. ~~**SL regression head**~~ — **Done.** 5th model output predicts optimal SL distance from MAE data. Trained with quantile loss at τ=0.85 on all signals. Server uses model SL floored by candle extreme.
@@ -582,7 +606,7 @@ P > 0.7:  5311 trades | TP1 EV=+0.758%
 
 ## Potential Next Improvements
 
-1. **Attention-based feature selection** — replace fixed 37-feature set with learnable feature attention weights. Let the model learn which features matter per-signal rather than treating all equally.
+1. **Attention-based feature selection** — replace fixed 27-feature set with learnable feature attention weights. Let the model learn which features matter per-signal rather than treating all equally.
 
 2. **Multi-task curriculum learning** — start training with only classification loss, gradually introduce regression and SL losses. May help the model learn a better representation before splitting into task-specific heads.
 

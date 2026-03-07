@@ -24,7 +24,7 @@ print(f"Using {device} device")
 
 from server.config import WINDOW_BY_TF
 
-N_FEATURES = 37
+N_FEATURES = 27
 MODEL_FILE = "best_model_liq_range_sfp.pth"
 
 
@@ -111,7 +111,7 @@ def run_pipeline(df, tf_key="4h", tf_hours=4.0):
     opens = df["Open"].values
     volumes = df["Volume"].values
 
-    actions, quality, tp_labels, sl_labels, ttp_labels, swept_levels, signal_map = generate_labels(
+    actions, quality, tp_labels, sl_labels, ttp_labels, swept_levels, signal_map, _mae = generate_labels(
         highs, lows, closes, opens, volumes=volumes, tf_key=tf_key,
     )
 
@@ -122,39 +122,30 @@ def run_pipeline(df, tf_key="4h", tf_hours=4.0):
 
     feat = pd.DataFrame()
 
-    # Range features (6)
+    # --- Range features (4) ---
     range_height_pct = np.zeros(n, dtype=np.float32)
-    range_touches_norm = np.zeros(n, dtype=np.float32)
-    range_concentration = np.zeros(n, dtype=np.float32)
     range_age = np.zeros(n, dtype=np.float32)
     sweep_depth_range = np.zeros(n, dtype=np.float32)
     reclaim_strength_range = np.zeros(n, dtype=np.float32)
 
-    # Liq features (6)
+    # --- Liq features (5) ---
     n_liq_swept_norm = np.zeros(n, dtype=np.float32)
     weighted_liq_swept = np.zeros(n, dtype=np.float32)
     max_leverage_norm = np.zeros(n, dtype=np.float32)
     liq_cascade_depth = np.zeros(n, dtype=np.float32)
-    liq_cluster_density = np.zeros(n, dtype=np.float32)
     n_swings_with_liq_norm = np.zeros(n, dtype=np.float32)
 
-    # SFP candle features (6)
+    # --- SFP candle features (4) ---
     body_ratio = np.zeros(n, dtype=np.float32)
     wick_ratio = np.zeros(n, dtype=np.float32)
-    vol_spike = np.zeros(n, dtype=np.float32)
-    close_position = np.zeros(n, dtype=np.float32)
     zone_sl_dist = np.zeros(n, dtype=np.float32)
     zone_tp_dist = np.zeros(n, dtype=np.float32)
-
-    vol_ma20 = pd.Series(volumes).rolling(20, min_periods=1).mean().values
 
     for i, sig in signal_map.items():
         r = sig.range_ref
         entry = sig.swept_level
 
         range_height_pct[i] = sig.range_height_pct
-        range_touches_norm[i] = min(sig.range_touches, 5) / 5.0
-        range_concentration[i] = sig.range_concentration
         range_age[i] = sig.range_age
         sweep_depth_range[i] = sig.sweep_depth_range
         reclaim_strength_range[i] = sig.reclaim_strength_range
@@ -164,7 +155,6 @@ def run_pipeline(df, tf_key="4h", tf_hours=4.0):
         max_leverage_norm[i] = sig.max_leverage_swept / 100.0
         local_atr = atr[i] if atr[i] > 0 else 1e-8
         liq_cascade_depth[i] = np.clip(sig.liq_cascade_depth / local_atr, 0, 5)
-        liq_cluster_density[i] = sig.liq_cluster_density
         n_swings_with_liq_norm[i] = min(sig.n_swings_with_liq, 10) / 10.0
 
         candle_range = highs[i] - lows[i]
@@ -172,12 +162,8 @@ def run_pipeline(df, tf_key="4h", tf_hours=4.0):
             body_ratio[i] = (closes[i] - opens[i]) / candle_range
             if sig.direction == 1:
                 wick_ratio[i] = (r.support.top - lows[i]) / candle_range
-                close_position[i] = (closes[i] - lows[i]) / candle_range
             else:
                 wick_ratio[i] = (highs[i] - r.resistance.bottom) / candle_range
-                close_position[i] = (highs[i] - closes[i]) / candle_range
-
-        vol_spike[i] = volumes[i] / (vol_ma20[i] + 1e-8)
 
         if entry > 0:
             if sig.direction == 1:
@@ -188,8 +174,6 @@ def run_pipeline(df, tf_key="4h", tf_hours=4.0):
                 zone_tp_dist[i] = (entry - r.support.bottom) / entry
 
     feat["range_height_pct"] = range_height_pct
-    feat["range_touches_norm"] = range_touches_norm
-    feat["range_concentration"] = range_concentration
     feat["range_age"] = range_age
     feat["sweep_depth_range"] = sweep_depth_range
     feat["reclaim_strength_range"] = reclaim_strength_range
@@ -197,15 +181,13 @@ def run_pipeline(df, tf_key="4h", tf_hours=4.0):
     feat["weighted_liq_swept"] = weighted_liq_swept
     feat["max_leverage_norm"] = max_leverage_norm
     feat["liq_cascade_depth"] = liq_cascade_depth
-    feat["liq_cluster_density"] = liq_cluster_density
     feat["n_swings_with_liq"] = n_swings_with_liq_norm
     feat["body_ratio"] = body_ratio
     feat["wick_ratio"] = wick_ratio
-    feat["vol_spike"] = vol_spike
-    feat["close_position"] = close_position
     feat["zone_sl_dist"] = zone_sl_dist
     feat["zone_tp_dist"] = zone_tp_dist
 
+    # --- Context features (6) ---
     feat["rsi"] = df["rsi"].values / 100.0
     feat["trend_strength"] = ((df["Close"] - df["ema_21"]) / df["Close"]).values
     feat["ms_alignment"] = np.zeros(n, dtype=np.float32)
@@ -215,12 +197,11 @@ def run_pipeline(df, tf_key="4h", tf_hours=4.0):
     feat["tf_hours"] = tf_hours / 4.0
     feat["asset_id"] = 1.0
 
-    # --- Range fingerprint features (6) ---
+    # --- Range fingerprint features (5) ---
     signal_type_arr = np.zeros(n, dtype=np.float32)
     is_recaptured_arr = np.zeros(n, dtype=np.float32)
     is_nested_arr = np.zeros(n, dtype=np.float32)
     touch_symmetry_arr = np.zeros(n, dtype=np.float32)
-    boundary_rejection_avg_arr = np.zeros(n, dtype=np.float32)
     range_position_arr = np.zeros(n, dtype=np.float32)
 
     for i, sig in signal_map.items():
@@ -228,38 +209,24 @@ def run_pipeline(df, tf_key="4h", tf_hours=4.0):
         is_recaptured_arr[i] = sig.is_recaptured
         is_nested_arr[i] = sig.is_nested
         touch_symmetry_arr[i] = sig.touch_symmetry
-        boundary_rejection_avg_arr[i] = np.clip(sig.boundary_rejection_avg, 0, 2.0)
         range_position_arr[i] = sig.range_position
 
     feat["signal_type"] = signal_type_arr
     feat["is_recaptured"] = is_recaptured_arr
     feat["is_nested"] = is_nested_arr
     feat["touch_symmetry"] = touch_symmetry_arr
-    feat["boundary_rejection_avg"] = boundary_rejection_avg_arr
     feat["range_position"] = range_position_arr
 
-    # --- New features (3) ---
+    # --- Direction feature (1) ---
     direction_arr = np.zeros(n, dtype=np.float32)
     for i, sig in signal_map.items():
         direction_arr[i] = 1.0 if sig.direction == 1 else -1.0
     feat["direction_feat"] = direction_arr
 
-    vwap_20 = (df["Close"] * volumes).rolling(20, min_periods=1).sum() / pd.Series(volumes).rolling(20, min_periods=1).sum()
-    vwap_dist = ((closes - vwap_20.values) / (closes + 1e-8)).astype(np.float32)
-    feat["vwap_distance"] = np.clip(vwap_dist, -0.05, 0.05)
-
-    up_vol = np.where(closes >= opens, volumes, 0.0)
-    up_vol_10 = pd.Series(up_vol).rolling(10, min_periods=1).sum().values
-    total_vol_10 = pd.Series(volumes).rolling(10, min_periods=1).sum().values
-    vol_imbalance = (up_vol_10 / (total_vol_10 + 1e-8) - 0.5).astype(np.float32)
-    feat["volume_imbalance"] = np.clip(vol_imbalance, -0.5, 0.5)
-
-    # --- HTF alignment features (4) ---
-    htf_trend, htf_rsi, htf_ms_dir, htf_ms_str = compute_htf_features(highs, lows, closes, n)
+    # --- HTF alignment features (2) ---
+    htf_trend, htf_rsi, _, _ = compute_htf_features(highs, lows, closes, n)
     feat["htf_trend"] = htf_trend
     feat["htf_rsi"] = htf_rsi
-    feat["htf_ms_direction"] = htf_ms_dir
-    feat["htf_ms_strength"] = htf_ms_str
 
     # Drop warmup
     drop_n = 30
@@ -273,7 +240,6 @@ def run_pipeline(df, tf_key="4h", tf_hours=4.0):
     signal_map_shifted = {k - drop_n: v for k, v in signal_map.items() if k >= drop_n}
 
     feat = feat.replace([float("inf"), float("-inf")], 0.0).fillna(0.0)
-    feat["vol_spike"] = feat["vol_spike"].clip(0, 5.0)
     feat["trend_strength"] = feat["trend_strength"].clip(-0.5, 0.5)
     feat["sweep_depth_range"] = feat["sweep_depth_range"].clip(0, 2.0)
     feat["reclaim_strength_range"] = feat["reclaim_strength_range"].clip(0, 2.0)
