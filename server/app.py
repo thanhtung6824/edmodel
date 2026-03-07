@@ -195,9 +195,13 @@ async def run_job(asset_key: str, tf_key: str):
             n_trimmed = len(actions_trimmed)
             logger.info(f"[{job_key}] Liq+Range+SFP: {int((actions_trimmed != 0).sum())} signals detected")
 
+            window = WINDOW_BY_TF.get(tf_key, WINDOW)
             scaled = scaler.transform(feat_values)
+            logger.info(f"[{job_key}] Inference: window={window}, {len(scaled)} bars scaled")
 
-            for bar_idx in range(WINDOW_BY_TF.get(tf_key, WINDOW) - 1, n_trimmed):
+            n_scored = 0
+            n_passed = 0
+            for bar_idx in range(window - 1, n_trimmed):
                 action = int(actions_trimmed[bar_idx])
                 if action == 0:
                     continue
@@ -211,13 +215,18 @@ async def run_job(asset_key: str, tf_key: str):
                     continue
 
                 prob = predict_bar(model, scaled, bar_idx, tf_key=tf_key)
+                direction = "LONG" if action == 1 else "SHORT"
+                bars_ago = n_trimmed - 1 - bar_idx
+                n_scored += 1
                 if prob is None or prob < MODEL_CONFIDENCE:
+                    logger.debug(f"[{job_key}] SKIP {direction} bar -{bars_ago}: P={prob or 0:.3f} < {MODEL_CONFIDENCE}")
                     continue
+                n_passed += 1
+                logger.info(f"[{job_key}] MODEL PASS {direction} bar -{bars_ago}: P={prob:.3f}")
 
                 sig_info = map_shifted[bar_idx]
                 r = sig_info.range_ref
                 is_long = action == 1
-                direction = "LONG" if is_long else "SHORT"
 
                 entry = float(swept_levels[orig_idx])
                 if is_long:
@@ -231,7 +240,6 @@ async def run_job(asset_key: str, tf_key: str):
                 sl_pct = abs(sl_price - entry) / (entry + 1e-8) * 100
                 ratio = tp_pct / (sl_pct + 1e-6)
 
-                bars_ago = n_trimmed - 1 - bar_idx
                 remaining = max(SIGNAL_EXPIRY_BARS - bars_ago, 0)
 
                 signal = {
@@ -262,6 +270,9 @@ async def run_job(asset_key: str, tf_key: str):
 
                 if bars_ago < SIGNAL_EXPIRY_BARS:
                     await send_signal_alert(signal)
+
+            if n_scored > 0:
+                logger.info(f"[{job_key}] Inference summary: {n_scored} scored, {n_passed} passed P>{MODEL_CONFIDENCE}, {new_signals} new signals")
 
         # ─── Finalize ─────────────────────────────────────────────
         if new_signals > 0:
