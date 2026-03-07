@@ -48,6 +48,13 @@ class LiqRangeSFPSignal:
     # SFP / context features (computed in build_features)
     ms_alignment: float = 0.0
     ms_strength: float = 0.0
+    # Range fingerprint features
+    signal_type: int = 0           # 0=sfp_boundary, 1=range_approach
+    is_recaptured: float = 0.0    # 1.0 if range was broken then recaptured
+    is_nested: float = 0.0        # 1.0 if range is inside a macro range (or is macro)
+    touch_symmetry: float = 0.0   # min(t_high, t_low) / max(t_high, t_low)
+    boundary_rejection_avg: float = 0.0  # avg wick rejection at tested boundary
+    range_position: float = 0.0   # (close - support) / range_height → 0=at support, 1=at resistance
 
 
 # ---------------------------------------------------------------------------
@@ -61,7 +68,7 @@ def generate_labels(highs, lows, closes, opens, volumes=None, tf_key="4h"):
     Liq data is computed but NOT used as a filter — stored as features.
 
     Returns:
-        (actions, quality, tp_labels, sl_labels, swept_levels, signal_map)
+        (actions, quality, mfe, sl_labels, swept_levels, signal_map)
         signal_map: dict of bar_idx -> LiqRangeSFPSignal
     """
     n = len(highs)
@@ -81,10 +88,14 @@ def generate_labels(highs, lows, closes, opens, volumes=None, tf_key="4h"):
         max_height_pct=height_max,
         min_zone_count=params.get("min_zone_count", 2),
         min_time_concentration=params.get("min_time_concentration", 0.80),
+        recapture_window=params.get("recapture_window", 5),
     )
     n_post = sum(1 for r in all_ranges if r.support.count == 1 or r.resistance.count == 1)
-    n_primary = len(all_ranges) - n_post
-    print(f"    Found {len(all_ranges)} ranges ({n_primary} primary, {n_post} post-break)")
+    n_macro = sum(1 for r in all_ranges if r.is_macro)
+    n_recaptured = sum(1 for r in all_ranges if r.recaptured)
+    n_primary = len(all_ranges) - n_post - n_macro
+    print(f"    Found {len(all_ranges)} ranges ({n_primary} primary, {n_post} post-break, "
+          f"{n_macro} macro, {n_recaptured} recaptured)")
 
     # --- 2+3. Swing detection (shared for SFP + liq) ---
     print(f"  [LiqRangeSFP/{tf_key}] Detecting swings + SFPs...")
@@ -265,6 +276,37 @@ def generate_labels(highs, lows, closes, opens, volumes=None, tf_key="4h"):
         actions[i] = direction
         swept_levels[i] = swept
 
+        # Range fingerprint features
+        t_high = r.touches_high
+        t_low = r.touches_low
+        touch_sym = min(t_high, t_low) / max(t_high, t_low, 1)
+
+        # Boundary rejection avg: avg wick into tested boundary zone
+        if direction == 1:
+            rej_bars = [b for b in r.support.bars if b <= i]
+            if rej_bars:
+                rej_avg = sum(r.support.level - lows[b] for b in rej_bars if b < n) / len(rej_bars)
+            else:
+                rej_avg = 0.0
+        else:
+            rej_bars = [b for b in r.resistance.bars if b <= i]
+            if rej_bars:
+                rej_avg = sum(highs[b] - r.resistance.level for b in rej_bars if b < n) / len(rej_bars)
+            else:
+                rej_avg = 0.0
+        boundary_rej = rej_avg / (range_height + 1e-8)
+
+        # Range position: where is close relative to range
+        range_pos = (closes[i] - r.low) / (range_height + 1e-8)
+
+        # Is nested: check if any macro range contains this range
+        is_nested = 1.0 if r.is_macro else 0.0
+        if not r.is_macro:
+            for ar in active_per_bar[i]:
+                if ar.is_macro and ar.low <= r.low and ar.high >= r.high:
+                    is_nested = 1.0
+                    break
+
         signal_map[i] = LiqRangeSFPSignal(
             bar_idx=i,
             direction=direction,
@@ -284,25 +326,164 @@ def generate_labels(highs, lows, closes, opens, volumes=None, tf_key="4h"):
             n_swings_with_liq=len(swings_with_liq),
             ms_alignment=ms_align,
             ms_strength=ms_strength_arr[i],
+            signal_type=0,
+            is_recaptured=1.0 if r.recaptured else 0.0,
+            is_nested=is_nested,
+            touch_symmetry=touch_sym,
+            boundary_rejection_avg=boundary_rej,
+            range_position=np.clip(range_pos, 0.0, 1.0),
         )
+
+    n_sfp = int(np.sum(actions != 0))
+    n_long_sfp = int(np.sum(actions == 1))
+    n_short_sfp = int(np.sum(actions == 2))
+    n_with_liq = sum(1 for s in signal_map.values() if s.n_liq_swept > 0)
+    print(f"    SFP boundary: {n_sfp} signals ({n_long_sfp} long, {n_short_sfp} short)")
+    print(f"    With liq confluence: {n_with_liq}/{n_sfp} ({n_with_liq/max(n_sfp,1)*100:.0f}%)")
+
+    # --- 6. Range approach signals (second pass) ---
+    n_approach = 0
+    for i in range(n):
+        if actions[i] != 0:
+            continue  # don't double-signal
+        if not active_per_bar[i]:
+            continue
+
+        # Per-TF zone_buffer
+        if tf_key == "15m":
+            zone_buffer = 0.0
+        elif tf_key == "4h":
+            zone_buffer = atr[i] * 0.15
+        else:
+            zone_buffer = atr[i] * 0.1
+
+        best_range = None
+        best_score = -1.0
+        best_dir = 0
+
+        for r in active_per_bar[i]:
+            range_height = r.high - r.low
+            if range_height <= 0:
+                continue
+
+            # Long at support: wick into support zone, close above zone center
+            if (lows[i] <= r.support.top + zone_buffer
+                    and lows[i] < r.support.level
+                    and closes[i] > r.support.level):
+                score = r.concentration * min(r.touches_high, r.touches_low)
+                if score > best_score:
+                    best_score = score
+                    best_range = r
+                    best_dir = 1
+
+            # Short at resistance: wick into resistance zone, close below zone center
+            if (highs[i] >= r.resistance.bottom - zone_buffer
+                    and highs[i] > r.resistance.level
+                    and closes[i] < r.resistance.level):
+                score = r.concentration * min(r.touches_high, r.touches_low)
+                if score > best_score:
+                    best_score = score
+                    best_range = r
+                    best_dir = 2
+
+        if best_range is None:
+            continue
+
+        r = best_range
+        direction = best_dir
+        range_height = r.high - r.low
+        mid_price = (r.high + r.low) / 2.0
+
+        # Entry = zone.level for approach signals
+        entry = r.support.level if direction == 1 else r.resistance.level
+
+        if direction == 1:
+            sweep_depth = (r.support.top - lows[i]) / range_height
+            reclaim_strength = (closes[i] - r.support.top) / range_height
+        else:
+            sweep_depth = (highs[i] - r.resistance.bottom) / range_height
+            reclaim_strength = (r.resistance.bottom - closes[i]) / range_height
+
+        # MS alignment
+        ms_dir = ms_direction[i]
+        if direction == 1:
+            ms_align = 1.0 if ms_dir > 0 else (-1.0 if ms_dir < 0 else 0.0)
+        else:
+            ms_align = 1.0 if ms_dir < 0 else (-1.0 if ms_dir > 0 else 0.0)
+
+        # Range fingerprint
+        t_high = r.touches_high
+        t_low = r.touches_low
+        touch_sym = min(t_high, t_low) / max(t_high, t_low, 1)
+
+        if direction == 1:
+            rej_bars = [b for b in r.support.bars if b <= i]
+            rej_avg = sum(r.support.level - lows[b] for b in rej_bars if b < n) / max(len(rej_bars), 1)
+        else:
+            rej_bars = [b for b in r.resistance.bars if b <= i]
+            rej_avg = sum(highs[b] - r.resistance.level for b in rej_bars if b < n) / max(len(rej_bars), 1)
+        boundary_rej = rej_avg / (range_height + 1e-8)
+
+        range_pos = (closes[i] - r.low) / (range_height + 1e-8)
+
+        is_nested = 1.0 if r.is_macro else 0.0
+        if not r.is_macro:
+            for ar in active_per_bar[i]:
+                if ar.is_macro and ar.low <= r.low and ar.high >= r.high:
+                    is_nested = 1.0
+                    break
+
+        actions[i] = direction
+        swept_levels[i] = entry  # zone.level as entry for approach signals
+
+        signal_map[i] = LiqRangeSFPSignal(
+            bar_idx=i,
+            direction=direction,
+            swept_level=entry,
+            range_ref=r,
+            range_height_pct=range_height / (mid_price + 1e-8),
+            range_touches=min(r.touches_high, r.touches_low),
+            range_concentration=r.concentration,
+            range_age=(i - r.confirmed) / 200.0,
+            sweep_depth_range=sweep_depth,
+            reclaim_strength_range=reclaim_strength,
+            n_liq_swept=0,
+            weighted_liq_swept=0.0,
+            max_leverage_swept=0,
+            liq_cascade_depth=0.0,
+            liq_cluster_density=0.0,
+            n_swings_with_liq=0,
+            ms_alignment=ms_align,
+            ms_strength=ms_strength_arr[i],
+            signal_type=1,
+            is_recaptured=1.0 if r.recaptured else 0.0,
+            is_nested=is_nested,
+            touch_symmetry=touch_sym,
+            boundary_rejection_avg=boundary_rej,
+            range_position=np.clip(range_pos, 0.0, 1.0),
+        )
+        n_approach += 1
 
     n_boundary = int(np.sum(actions != 0))
     n_long = int(np.sum(actions == 1))
     n_short = int(np.sum(actions == 2))
-    n_with_liq = sum(1 for s in signal_map.values() if s.n_liq_swept > 0)
-    print(f"    Boundary-filtered: {n_boundary} signals ({n_long} long, {n_short} short)")
-    print(f"    With liq confluence: {n_with_liq}/{n_boundary} ({n_with_liq/max(n_boundary,1)*100:.0f}%)")
+    print(f"    Range approach: {n_approach} signals")
+    print(f"    Total: {n_boundary} signals ({n_long} long, {n_short} short)")
 
-    # --- TP/SL labels (zone-based structural SL) ---
-    quality, tp_labels, sl_labels = compute_range_tp_sl_labels(
+    # --- MFE/SL labels ---
+    quality, mfe_labels, sl_labels = compute_range_tp_sl_labels(
         highs, lows, closes, actions, swept_levels, signal_map, horizon=18,
     )
-    n_profitable = int(np.sum((actions != 0) & (quality == 1)))
     total_final = int(np.sum(actions != 0))
     if total_final > 0:
-        print(f"  [LiqRangeSFP/{tf_key}] Funnel: {total_final} signals -> "
-              f"{n_profitable} profitable ({n_profitable / total_final * 100:.1f}%)")
+        n_prof = int(np.sum((actions != 0) & (quality == 1)))
+        mask = actions != 0
+        avg_mfe = float(np.mean(mfe_labels[mask]))
+        avg_sl = float(np.mean(sl_labels[mask]))
+        print(f"  [LiqRangeSFP/{tf_key}] {total_final} signals -> "
+              f"profitable: {n_prof} ({n_prof/total_final*100:.0f}%) | "
+              f"avg MFE: {avg_mfe*100:.2f}% | avg SL: {avg_sl*100:.2f}%")
     else:
         print(f"  [LiqRangeSFP/{tf_key}] No signals detected")
 
-    return actions, quality, tp_labels, sl_labels, swept_levels, signal_map
+    return actions, quality, mfe_labels, sl_labels, swept_levels, signal_map

@@ -214,31 +214,49 @@ async def run_job(asset_key: str, tf_key: str):
                 if bar_idx not in map_shifted:
                     continue
 
-                prob = predict_bar(model, scaled, bar_idx, tf_key=tf_key)
+                result = predict_bar(model, scaled, bar_idx, tf_key=tf_key)
                 direction = "LONG" if action == 1 else "SHORT"
                 bars_ago = n_trimmed - 1 - bar_idx
                 n_scored += 1
-                if prob is None or prob < MODEL_CONFIDENCE:
-                    logger.debug(f"[{job_key}] SKIP {direction} bar -{bars_ago}: P={prob or 0:.3f} < {MODEL_CONFIDENCE}")
+                if result is None:
+                    continue
+                p_win, tp1_dist, tp2_dist = result
+                # Gate on P(profitable)
+                if p_win < MODEL_CONFIDENCE:
+                    logger.debug(f"[{job_key}] SKIP {direction} bar -{bars_ago}: P(win)={p_win:.3f} < {MODEL_CONFIDENCE}")
                     continue
                 n_passed += 1
-                logger.info(f"[{job_key}] MODEL PASS {direction} bar -{bars_ago}: P={prob:.3f}")
+                logger.info(f"[{job_key}] MODEL PASS {direction} bar -{bars_ago}: P(win)={p_win:.3f} TP1={tp1_dist*100:.2f}% TP2={tp2_dist*100:.2f}%")
 
                 sig_info = map_shifted[bar_idx]
                 r = sig_info.range_ref
                 is_long = action == 1
 
                 entry = float(swept_levels[orig_idx])
+
+                # Model-predicted TP prices from regression heads
                 if is_long:
-                    tp_price = r.resistance.top
+                    tp1_price = entry * (1 + tp1_dist)
+                    tp2_price = entry * (1 + tp2_dist)
                     sl_price = float(df["Low"].values[orig_idx])
                 else:
-                    tp_price = r.support.bottom
+                    tp1_price = entry * (1 - tp1_dist)
+                    tp2_price = entry * (1 - tp2_dist)
                     sl_price = float(df["High"].values[orig_idx])
 
-                tp_pct = abs(tp_price - entry) / (entry + 1e-8) * 100
+                tp1_pct = tp1_dist * 100
+                tp2_pct = tp2_dist * 100
                 sl_pct = abs(sl_price - entry) / (entry + 1e-8) * 100
-                ratio = tp_pct / (sl_pct + 1e-6)
+
+                # Best TP: TP1 is conservative (higher WR), TP2 is aggressive
+                # Use TP1 as default, TP2 only if R:R is significantly better
+                tp1_rr = tp1_pct / (sl_pct + 1e-6)
+                tp2_rr = tp2_pct / (sl_pct + 1e-6)
+                if tp2_rr > tp1_rr * 1.5:
+                    best_tp_price, best_tp_pct, best_label = tp2_price, tp2_pct, "TP2"
+                else:
+                    best_tp_price, best_tp_pct, best_label = tp1_price, tp1_pct, "TP1"
+                ratio = best_tp_pct / (sl_pct + 1e-6)
 
                 remaining = max(SIGNAL_EXPIRY_BARS - bars_ago, 0)
 
@@ -251,12 +269,19 @@ async def run_job(asset_key: str, tf_key: str):
                     "symbol": symbol,
                     "direction": direction,
                     "entry": round(entry, 2),
-                    "tp_pct": round(tp_pct, 2),
-                    "sl_pct": round(sl_pct, 2),
-                    "tp_price": round(tp_price, 2),
+                    "tp1_price": round(tp1_price, 2),
+                    "tp2_price": round(tp2_price, 2),
+                    "tp1_pct": round(tp1_pct, 2),
+                    "tp2_pct": round(tp2_pct, 2),
+                    "tp1_conf": round(p_win, 3),
+                    "tp2_conf": round(p_win, 3),
+                    "tp_price": round(best_tp_price, 2),
+                    "tp_pct": round(best_tp_pct, 2),
                     "sl_price": round(sl_price, 2),
+                    "sl_pct": round(sl_pct, 2),
                     "ratio": round(ratio, 4),
-                    "confidence": round(prob, 3),
+                    "confidence": round(p_win, 3),
+                    "best_tp": best_label,
                     "bars_remaining": remaining,
                     "status": "open",
                     "actual_r": None,
@@ -266,7 +291,7 @@ async def run_job(asset_key: str, tf_key: str):
                 live_signals.append(signal)
                 signaled_times.add(bar_time)
                 new_signals += 1
-                logger.info(f"[{job_key}] SIGNAL: {direction} @ {entry:.2f} (P={prob:.2f}, R:R={ratio:.2f}, bar -{bars_ago})")
+                logger.info(f"[{job_key}] SIGNAL: {direction} @ {entry:.2f} (P(win)={p_win:.2f}, TP1={tp1_pct:.2f}% TP2={tp2_pct:.2f}%, best={best_label} R:R={ratio:.2f}, bar -{bars_ago})")
 
                 if bars_ago < SIGNAL_EXPIRY_BARS:
                     await send_signal_alert(signal)

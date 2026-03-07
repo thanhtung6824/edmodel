@@ -4,7 +4,7 @@ from torch.utils.data import Dataset
 
 
 class SFPDataset(Dataset):
-    def __init__(self, scaled_data, actions, quality, tp_labels, sl_labels, window=30):
+    def __init__(self, scaled_data, actions, quality, mfe, sl_labels, window=30):
         self.data = scaled_data
         self.window = window
 
@@ -18,7 +18,7 @@ class SFPDataset(Dataset):
 
         self.actions = actions
         self.quality = quality
-        self.tp_labels = tp_labels
+        self.mfe = mfe
         self.sl_labels = sl_labels
 
     def __len__(self):
@@ -29,12 +29,12 @@ class SFPDataset(Dataset):
         x = self.data[real_idx - self.window + 1 : real_idx + 1]
         direction = self.actions[real_idx]  # 1=long, 2=short
         q = self.quality[real_idx]
-        tp = self.tp_labels[real_idx]
+        mfe = self.mfe[real_idx]
         sl = self.sl_labels[real_idx]
         return (
             torch.FloatTensor(x),
             torch.LongTensor([direction]).squeeze(),
-            torch.FloatTensor([q]).squeeze(),
-            torch.FloatTensor([tp]).squeeze(),
-            torch.FloatTensor([sl]).squeeze(),
+            torch.FloatTensor([q]).squeeze(),    # scalar quality
+            torch.FloatTensor([mfe]).squeeze(),   # scalar MFE
+            torch.FloatTensor([sl]).squeeze(),    # scalar SL
         )

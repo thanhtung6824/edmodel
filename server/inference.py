@@ -1,4 +1,10 @@
-"""Model loading and inference for Liq+Range+SFP classifier."""
+"""Model loading and inference for Liq+Range+SFP model.
+
+Model outputs (B, 3):
+  [0]: P(profitable) logit — classification gate
+  [1]: TP1 distance (softplus, conservative quantile)
+  [2]: TP2 distance (softplus, aggressive quantile)
+"""
 
 import joblib
 import torch
@@ -26,10 +32,10 @@ def predict_bar(
     scaled_features,
     bar_idx: int,
     tf_key: str = "4h",
-) -> float | None:
-    """Run classifier on a specific bar.
+) -> tuple[float, float, float] | None:
+    """Run model on a specific bar.
 
-    Returns P(win) probability, or None if not enough data.
+    Returns (P(profitable), tp1_dist, tp2_dist), or None if not enough data.
     """
     window = WINDOW_BY_TF.get(tf_key, WINDOW)
     if bar_idx < window - 1 or bar_idx >= len(scaled_features):
@@ -39,6 +45,10 @@ def predict_bar(
     x_t = torch.FloatTensor(x).unsqueeze(0)
 
     with torch.no_grad():
-        logit = model(x_t)
+        out = model(x_t)  # (1, 3)
 
-    return torch.sigmoid(logit).item()
+    out = out.squeeze(0)  # (3,)
+    p_win = torch.sigmoid(out[0]).item()
+    tp1_dist = out[1].item()
+    tp2_dist = out[2].item()
+    return (p_win, tp1_dist, tp2_dist)

@@ -25,7 +25,7 @@ def run_liq_range_sfp_detection(df: pd.DataFrame, tf_key: str):
     opens = df["Open"].values
     volumes = df["Volume"].values if "Volume" in df.columns else None
 
-    actions, _quality, _tp, _sl, swept_levels, signal_map = generate_labels(
+    actions, _quality, _mfe, _sl, swept_levels, signal_map = generate_labels(
         highs, lows, closes, opens,
         volumes=volumes,
         tf_key=tf_key,
@@ -41,13 +41,13 @@ def build_liq_range_sfp_features(
     tf_hours: float,
     asset_id: float = 1.0,
 ):
-    """Build 24 Liq+Range+SFP features.
+    """Build 30 Liq+Range+SFP features.
 
-    6 range + 6 liquidation + 6 SFP candle + 6 context.
+    6 range + 6 liquidation + 6 SFP candle + 6 context + 6 range fingerprint.
     Mirrors src/train_liq_range_sfp.py:build_features() exactly.
 
     Returns:
-        feat_values: float32 array (N-30, 24)
+        feat_values: float32 array (N-30, 30)
         actions_trimmed: actions with warmup dropped
         signal_map_shifted: signal_map with indices shifted by -30
     """
@@ -166,6 +166,29 @@ def build_liq_range_sfp_features(
 
     feat["tf_hours"] = tf_hours / 4.0
     feat["asset_id"] = asset_id
+
+    # --- Range fingerprint features (6) ---
+    signal_type_arr = np.zeros(n, dtype=np.float32)
+    is_recaptured_arr = np.zeros(n, dtype=np.float32)
+    is_nested_arr = np.zeros(n, dtype=np.float32)
+    touch_symmetry_arr = np.zeros(n, dtype=np.float32)
+    boundary_rejection_avg_arr = np.zeros(n, dtype=np.float32)
+    range_position_arr = np.zeros(n, dtype=np.float32)
+
+    for i, sig in signal_map.items():
+        signal_type_arr[i] = float(sig.signal_type)
+        is_recaptured_arr[i] = sig.is_recaptured
+        is_nested_arr[i] = sig.is_nested
+        touch_symmetry_arr[i] = sig.touch_symmetry
+        boundary_rejection_avg_arr[i] = np.clip(sig.boundary_rejection_avg, 0, 2.0)
+        range_position_arr[i] = sig.range_position
+
+    feat["signal_type"] = signal_type_arr
+    feat["is_recaptured"] = is_recaptured_arr
+    feat["is_nested"] = is_nested_arr
+    feat["touch_symmetry"] = touch_symmetry_arr
+    feat["boundary_rejection_avg"] = boundary_rejection_avg_arr
+    feat["range_position"] = range_position_arr
 
     # Drop warmup
     drop_n = 30

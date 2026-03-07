@@ -1,8 +1,8 @@
-"""Benchmark: Liq+Range+SFP strategy WITH model predictions.
+"""Benchmark: Liq+Range+SFP strategy WITH model predictions (MFE regression).
 
-Runs signal detection → feature engineering → model inference → account simulation.
+Runs signal detection -> feature engineering -> model inference -> account simulation.
 Uses 2024 data as out-of-sample evaluation period.
-Shows results at multiple confidence thresholds.
+Shows results at multiple confidence thresholds with model-predicted TP levels.
 
 Usage:
     python benchmark_liq_range_sfp.py
@@ -11,26 +11,26 @@ Usage:
 
 import os
 import sys
-import json
 import numpy as np
 import pandas as pd
 import torch
 
+import joblib
+
 from src.labels.liq_sfp_labels import generate_labels
 from src.models.liq_range_sfp_model import LiqRangeSFPClassifier
-from server.inference import load_scaler
 from server.pipeline import build_liq_range_sfp_features
 
 CUTOFF = "2024-01-01"
 TFS = ["15min", "1h", "4h"]
 TF_KEYS = {"15min": "15m", "1h": "1h", "4h": "4h"}
 TF_HOURS = {"15min": 0.25, "1h": 1.0, "4h": 4.0}
-from server.config import WINDOW_BY_TF
+WINDOW_BY_TF = {"15m": 120, "1h": 48, "4h": 30}
 
 HORIZON = 18
 MODEL_FILE = "best_model_liq_range_sfp.pth"
 SCALER_FILE = "liq_range_sfp_scaler.joblib"
-N_FEATURES = 24
+N_FEATURES = 30
 THRESHOLDS = [0.3, 0.4, 0.5, 0.6, 0.7]
 
 ASSETS = {
@@ -63,12 +63,15 @@ def load_model():
 
 
 def predict_signals(model, feat_values, actions, signal_map_shifted, tf_key="4h"):
-    """Run model on all signal bars, return P(win) per signal bar index."""
+    """Run model on all signal bars, return per-bar predictions.
+
+    Returns dict of bar_idx -> (p_win, tp1_dist, tp2_dist).
+    """
     window = WINDOW_BY_TF.get(tf_key, 30)
-    scaler = load_scaler(SCALER_FILE)
+    scaler = joblib.load(SCALER_FILE)
     scaled = scaler.transform(feat_values)
 
-    probs = {}
+    preds = {}
     n = len(actions)
     for bar_idx in range(window - 1, n):
         if actions[bar_idx] == 0:
@@ -79,31 +82,35 @@ def predict_signals(model, feat_values, actions, signal_map_shifted, tf_key="4h"
         x = scaled[bar_idx - window + 1: bar_idx + 1]
         x_t = torch.FloatTensor(x).unsqueeze(0)
         with torch.no_grad():
-            logit = model(x_t)
-        probs[bar_idx] = torch.sigmoid(logit).item()
+            out = model(x_t).squeeze(0)  # (3,)
+        p_win = torch.sigmoid(out[0]).item()
+        tp1_dist = out[1].item()
+        tp2_dist = out[2].item()
+        preds[bar_idx] = (p_win, tp1_dist, tp2_dist)
 
-    return probs
+    return preds
 
 
-def eval_with_model(actions, quality, tp_labels, sl_labels, probs, cutoff_idx, tf_label, tf_key):
-    """Evaluate at multiple confidence thresholds."""
+def eval_with_model(actions, quality, mfe, sl_labels, preds, cutoff_idx, tf_label, tf_key):
+    """Evaluate at multiple confidence thresholds using MFE-based outcomes."""
     drop_n = 30
     post_cutoff = max(0, cutoff_idx - drop_n)
 
     # Collect signal data
     signals = []
-    for bar_idx, prob in probs.items():
+    for bar_idx, (p_win, tp1_dist, tp2_dist) in preds.items():
         if bar_idx < post_cutoff:
             continue
         action = actions[bar_idx]
         if action == 0:
             continue
+        raw = bar_idx + drop_n
         signals.append({
             "bar_idx": bar_idx,
-            "prob": prob,
-            "quality": quality[bar_idx + drop_n],
-            "tp": tp_labels[bar_idx + drop_n],
-            "sl": sl_labels[bar_idx + drop_n],
+            "p_win": p_win, "tp1_dist": tp1_dist, "tp2_dist": tp2_dist,
+            "quality": quality[raw],
+            "mfe": mfe[raw],
+            "sl": sl_labels[raw],
             "action": action,
         })
 
@@ -112,62 +119,61 @@ def eval_with_model(actions, quality, tp_labels, sl_labels, probs, cutoff_idx, t
         print(f"  No signals after cutoff")
         return None
 
-    # Base stats (no model filter)
-    base_wins = sum(1 for s in signals if s["quality"] == 1)
-    base_wr = base_wins / n_total * 100
-    base_tp = np.mean([s["tp"] for s in signals]) * 100
-    base_sl = np.mean([s["sl"] for s in signals]) * 100
-    base_ev = (base_wr / 100) * base_tp - (1 - base_wr / 100) * base_sl
-
+    n_prof = sum(1 for s in signals if s["quality"] == 1)
+    avg_mfe = np.mean([s["mfe"] for s in signals]) * 100
+    avg_sl = np.mean([s["sl"] for s in signals]) * 100
     print(f"\n  {tf_label}: {n_total} signals after {CUTOFF}")
-    print(f"  Base (no filter): WR={base_wr:.1f}%, TP={base_tp:.2f}%, SL={base_sl:.2f}%, EV={base_ev:+.3f}%")
-
-    # P(win) spread
-    win_probs = [s["prob"] for s in signals if s["quality"] == 1]
-    loss_probs = [s["prob"] for s in signals if s["quality"] == 0]
-    if win_probs and loss_probs:
-        print(f"  P(win) spread — winners: {np.mean(win_probs):.3f} vs losers: {np.mean(loss_probs):.3f}")
+    print(f"  Base: {n_prof}/{n_total} profitable ({n_prof/n_total*100:.0f}%), avg MFE={avg_mfe:.2f}%, avg SL={avg_sl:.2f}%")
 
     # Threshold analysis
-    print(f"\n  {'Thresh':>8} {'Trades':>8} {'WR%':>8} {'TP%':>8} {'SL%':>8} {'EV%':>8} {'TotalR':>8} {'$10K->':>12}")
-    print(f"  {'-'*72}")
+    print(f"\n  {'Thresh':>8} {'Trades':>8} {'GateWR':>8} {'TP1WR%':>8} {'TP2WR%':>8} {'TP1%':>8} {'TP2%':>8} {'SL%':>8} {'EV1%':>8} {'EV2%':>8} {'TotalR':>8} {'$10K->':>12}")
+    print(f"  {'-'*112}")
 
     results = []
     for thresh in THRESHOLDS:
-        filtered = [s for s in signals if s["prob"] >= thresh]
+        filtered = [s for s in signals if s["p_win"] >= thresh]
         n_filt = len(filtered)
         if n_filt == 0:
-            print(f"  {thresh:>8.1f} {'0':>8} {'—':>8} {'—':>8} {'—':>8} {'—':>8} {'—':>8} {'—':>12}")
             continue
 
-        wins = sum(1 for s in filtered if s["quality"] == 1)
-        wr = wins / n_filt * 100
-        avg_tp = np.mean([s["tp"] for s in filtered]) * 100
-        avg_sl = np.mean([s["sl"] for s in filtered]) * 100
-        ratios = [s["tp"] / (s["sl"] + 1e-8) for s in filtered]
-        ev = (wr / 100) * avg_tp - (1 - wr / 100) * avg_sl
+        # Gate WR: MFE > SL
+        gate_wr = sum(1 for s in filtered if s["quality"] == 1) / n_filt * 100
+        # TP1 WR: MFE >= predicted TP1
+        tp1_wr = sum(1 for s in filtered if s["mfe"] >= s["tp1_dist"]) / n_filt * 100
+        # TP2 WR: MFE >= predicted TP2
+        tp2_wr = sum(1 for s in filtered if s["mfe"] >= s["tp2_dist"]) / n_filt * 100
 
-        # Account sim
+        avg_tp1 = np.mean([s["tp1_dist"] for s in filtered]) * 100
+        avg_tp2 = np.mean([s["tp2_dist"] for s in filtered]) * 100
+        avg_sl_f = np.mean([s["sl"] for s in filtered]) * 100
+        ev1 = (tp1_wr / 100) * avg_tp1 - (1 - tp1_wr / 100) * avg_sl_f
+        ev2 = (tp2_wr / 100) * avg_tp2 - (1 - tp2_wr / 100) * avg_sl_f
+
+        # Account sim using TP1
         total_r = 0.0
         balance = 10_000.0
         for s in filtered:
-            r = s["tp"] / (s["sl"] + 1e-8)
-            if s["quality"] == 1:
+            r = s["tp1_dist"] / (s["sl"] + 1e-8)
+            if s["mfe"] >= s["tp1_dist"]:
                 total_r += r
                 balance *= (1 + 0.01 * r)
             else:
                 total_r -= 1.0
                 balance *= (1 - 0.01)
 
-        print(f"  {thresh:>8.1f} {n_filt:>8} {wr:>7.1f}% {avg_tp:>7.2f}% {avg_sl:>7.2f}% {ev:>+7.3f}% {total_r:>+7.1f}R ${balance:>10,.0f}")
+        print(f"  {thresh:>8.1f} {n_filt:>8} {gate_wr:>7.1f}% {tp1_wr:>7.1f}% {tp2_wr:>7.1f}% {avg_tp1:>7.2f}% {avg_tp2:>7.2f}% {avg_sl_f:>7.2f}% {ev1:>+7.3f}% {ev2:>+7.3f}% {total_r:>+7.1f}R ${balance:>10,.0f}")
 
         results.append({
             "threshold": thresh,
             "n_signals": n_filt,
-            "win_rate": round(wr, 1),
-            "avg_tp": round(avg_tp, 2),
-            "avg_sl": round(avg_sl, 2),
-            "ev_per_trade": round(ev, 3),
+            "gate_wr": round(gate_wr, 1),
+            "win_rate_tp1": round(tp1_wr, 1),
+            "win_rate_tp2": round(tp2_wr, 1),
+            "avg_tp1": round(avg_tp1, 2),
+            "avg_tp2": round(avg_tp2, 2),
+            "avg_sl": round(avg_sl_f, 2),
+            "ev1": round(ev1, 3),
+            "ev2": round(ev2, 3),
             "total_r": round(total_r, 1),
             "final_balance": round(balance, 0),
         })
@@ -176,8 +182,9 @@ def eval_with_model(actions, quality, tp_labels, sl_labels, probs, cutoff_idx, t
         "label": tf_label,
         "tf_key": tf_key,
         "n_signals_raw": n_total,
-        "base_wr": round(base_wr, 1),
-        "base_ev": round(base_ev, 3),
+        "base_profitable_pct": round(n_prof / n_total * 100, 1),
+        "avg_mfe": round(avg_mfe, 2),
+        "avg_sl": round(avg_sl, 2),
         "thresholds": results,
     }
 
@@ -215,7 +222,7 @@ def run_benchmark():
 
             label = f"{asset_name.upper()}/{tf_key}"
 
-            actions, quality, tp_labels, sl_labels, swept_levels, signal_map = generate_labels(
+            actions, quality, mfe, sl_labels, swept_levels, signal_map = generate_labels(
                 df["High"].values, df["Low"].values,
                 df["Close"].values, df["Open"].values,
                 volumes=df["Volume"].values if "Volume" in df.columns else None,
@@ -227,11 +234,11 @@ def run_benchmark():
             )
 
             feat_arr = feat.values if hasattr(feat, 'values') else feat
-            probs = predict_signals(model, feat_arr.astype(np.float32), actions_trimmed, signal_map_shifted, tf_key=tf_key)
+            preds = predict_signals(model, feat_arr.astype(np.float32), actions_trimmed, signal_map_shifted, tf_key=tf_key)
 
             result = eval_with_model(
-                actions_trimmed, quality, tp_labels, sl_labels,
-                probs, cutoff_idx, label, tf_key,
+                actions_trimmed, quality, mfe, sl_labels,
+                preds, cutoff_idx, label, tf_key,
             )
             if result:
                 all_results.append(result)
@@ -241,29 +248,28 @@ def run_benchmark():
         os.makedirs("benchmark", exist_ok=True)
         out_file = "benchmark/liq_range_sfp_results.txt"
         with open(out_file, "w") as f:
-            f.write(f"LIQ+RANGE+SFP BENCHMARK RESULTS\n")
+            f.write(f"LIQ+RANGE+SFP BENCHMARK RESULTS (MFE Regression)\n")
             f.write(f"Model: {MODEL_FILE}  |  Cutoff: {CUTOFF}  |  Horizon: {HORIZON} bars\n")
-            f.write(f"{'='*80}\n\n")
+            f.write(f"{'='*120}\n\n")
 
             for r in all_results:
-                f.write(f"{r['label']}  ({r['n_signals_raw']} signals)\n")
-                f.write(f"  Base: WR={r['base_wr']:.1f}%  EV={r['base_ev']:+.3f}%\n")
-                f.write(f"  {'Thresh':>8} {'Trades':>8} {'WR%':>8} {'TP%':>8} {'SL%':>8} {'EV%':>8} {'TotalR':>8} {'$10K->':>12}\n")
-                f.write(f"  {'-'*72}\n")
+                f.write(f"{r['label']}  ({r['n_signals_raw']} signals, {r['base_profitable_pct']:.0f}% profitable, avg MFE={r['avg_mfe']:.2f}%, avg SL={r['avg_sl']:.2f}%)\n")
+                f.write(f"  {'Thresh':>8} {'Trades':>8} {'GateWR':>8} {'TP1WR%':>8} {'TP2WR%':>8} {'TP1%':>8} {'TP2%':>8} {'SL%':>8} {'EV1%':>8} {'EV2%':>8} {'TotalR':>8} {'$10K->':>12}\n")
+                f.write(f"  {'-'*112}\n")
                 for t in r["thresholds"]:
-                    f.write(f"  {t['threshold']:>8.1f} {t['n_signals']:>8} {t['win_rate']:>7.1f}% {t['avg_tp']:>7.2f}% {t['avg_sl']:>7.2f}% {t['ev_per_trade']:>+7.3f}% {t['total_r']:>+7.1f}R ${t['final_balance']:>10,.0f}\n")
+                    f.write(f"  {t['threshold']:>8.1f} {t['n_signals']:>8} {t['gate_wr']:>7.1f}% {t['win_rate_tp1']:>7.1f}% {t['win_rate_tp2']:>7.1f}% {t['avg_tp1']:>7.2f}% {t['avg_tp2']:>7.2f}% {t['avg_sl']:>7.2f}% {t['ev1']:>+7.3f}% {t['ev2']:>+7.3f}% {t['total_r']:>+7.1f}R ${t['final_balance']:>10,.0f}\n")
                 f.write(f"\n")
 
             # Summary
-            f.write(f"{'='*80}\n")
-            f.write(f"SUMMARY (best threshold per asset/tf)\n")
-            f.write(f"{'='*80}\n")
-            f.write(f"{'Label':<16} {'Thresh':>8} {'Trades':>8} {'WR%':>8} {'EV%':>8} {'TotalR':>8} {'$10K->':>12}\n")
-            f.write(f"{'-'*72}\n")
+            f.write(f"{'='*120}\n")
+            f.write(f"SUMMARY (best TP1 EV threshold per asset/tf)\n")
+            f.write(f"{'='*120}\n")
+            f.write(f"{'Label':<16} {'Thresh':>8} {'Trades':>8} {'GateWR':>8} {'TP1WR%':>8} {'TP2WR%':>8} {'EV1%':>8} {'TotalR':>8} {'$10K->':>12}\n")
+            f.write(f"{'-'*100}\n")
             for r in all_results:
-                best = max(r["thresholds"], key=lambda t: t["ev_per_trade"]) if r["thresholds"] else None
+                best = max(r["thresholds"], key=lambda t: t["ev1"]) if r["thresholds"] else None
                 if best:
-                    f.write(f"{r['label']:<16} {best['threshold']:>8.1f} {best['n_signals']:>8} {best['win_rate']:>7.1f}% {best['ev_per_trade']:>+7.3f}% {best['total_r']:>+7.1f}R ${best['final_balance']:>10,.0f}\n")
+                    f.write(f"{r['label']:<16} {best['threshold']:>8.1f} {best['n_signals']:>8} {best['gate_wr']:>7.1f}% {best['win_rate_tp1']:>7.1f}% {best['win_rate_tp2']:>7.1f}% {best['ev1']:>+7.3f}% {best['total_r']:>+7.1f}R ${best['final_balance']:>10,.0f}\n")
 
         print(f"\nSaved to {out_file}")
 

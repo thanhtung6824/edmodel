@@ -44,6 +44,9 @@ class ZoneRange:
     broken: bool = False
     broken_dir: int = 0     # 1=bullish breakout, 2=bearish breakdown
     broken_bar: int = -1
+    recaptured: bool = False
+    recapture_bar: int = -1
+    is_macro: bool = False
 
 
 @dataclass
@@ -145,9 +148,9 @@ RANGE_HEIGHT_PCT = {
 
 # Range detection parameters per TF
 RANGE_SFP_PARAMS = {
-    "15m": {"n_swing": 3, "min_bars": 30, "max_bars": 400, "min_zone_count": 4, "min_time_concentration": 0.80},
-    "1h":  {"n_swing": 3, "min_bars": 15, "max_bars": 300, "min_zone_count": 3, "min_time_concentration": 0.70},
-    "4h":  {"n_swing": 3, "min_bars": 20, "max_bars": 300, "min_zone_count": 3, "min_time_concentration": 0.65},
+    "15m": {"n_swing": 3, "min_bars": 30, "max_bars": 400, "min_zone_count": 4, "min_time_concentration": 0.80, "recapture_window": 10},
+    "1h":  {"n_swing": 3, "min_bars": 15, "max_bars": 300, "min_zone_count": 3, "min_time_concentration": 0.70, "recapture_window": 5},
+    "4h":  {"n_swing": 3, "min_bars": 20, "max_bars": 300, "min_zone_count": 3, "min_time_concentration": 0.65, "recapture_window": 3},
 }
 
 
@@ -344,6 +347,7 @@ def detect_ranges_v2(
     min_time_concentration=0.80,
     min_zone_count=2,
     cluster_pct=0.015,
+    recapture_window=5,
 ):
     """Detect ranges using zone-based boundaries in temporal windows.
 
@@ -395,7 +399,7 @@ def detect_ranges_v2(
         if not is_dup:
             ranges.append(zr)
 
-    # --- Step 4: Break detection + post-break ranges ---
+    # --- Step 4: Break detection + recapture + post-break ranges ---
     post_break_ranges = []
 
     for r in ranges:
@@ -405,7 +409,17 @@ def detect_ranges_v2(
                 r.broken_dir = 2
                 r.broken_bar = i
 
-                # Find lowest low after break → new support
+                # Check for recapture within window
+                recaptured = False
+                for j in range(i + 1, min(i + 1 + recapture_window, n)):
+                    if closes[j] >= r.support.bottom and closes[j] <= r.resistance.top:
+                        r.broken = False
+                        r.recaptured = True
+                        r.recapture_bar = j
+                        recaptured = True
+                        break
+
+                # Find lowest low after break → new support (post-break range)
                 break_low = lows[i]
                 break_low_bar = i
                 for j in range(i + 1, min(i + max_bars // 2, n)):
@@ -432,12 +446,25 @@ def detect_ranges_v2(
                             pb.concentration = conc
                             pb._time_concentration = conc
                             post_break_ranges.append(pb)
+
+                if recaptured:
+                    continue  # range is active again, keep scanning for next break
                 break
 
             elif closes[i] > r.resistance.top:
                 r.broken = True
                 r.broken_dir = 1
                 r.broken_bar = i
+
+                # Check for recapture within window
+                recaptured = False
+                for j in range(i + 1, min(i + 1 + recapture_window, n)):
+                    if closes[j] >= r.support.bottom and closes[j] <= r.resistance.top:
+                        r.broken = False
+                        r.recaptured = True
+                        r.recapture_bar = j
+                        recaptured = True
+                        break
 
                 break_high = highs[i]
                 break_high_bar = i
@@ -465,6 +492,9 @@ def detect_ranges_v2(
                             pb.concentration = conc
                             pb._time_concentration = conc
                             post_break_ranges.append(pb)
+
+                if recaptured:
+                    continue
                 break
 
     # Break detection on post-break ranges
@@ -483,12 +513,69 @@ def detect_ranges_v2(
 
     ranges.extend(post_break_ranges)
 
+    # --- Step 4b: Macro range detection (second pass with wider params) ---
+    macro_cluster_pct = 0.03
+    macro_min_zone_count = max(min_zone_count - 1, 2)
+    macro_max_height_pct = 0.18 if max_height_pct >= 0.10 else 0.10
+    macro_min_time_conc = min_time_concentration * 0.90
+
+    macro_raw: list[ZoneRange] = []
+    for w_start in range(0, max(1, n - min_bars), max(max_bars, 250)):
+        w_end = min(w_start + max(max_bars * 2, 500), n)
+        window_ranges = _detect_ranges_in_window(
+            highs, lows, closes, opens,
+            w_start, w_end, w_start,
+            n_swing, min_bars, max_bars,
+            min_height_pct, macro_max_height_pct,
+            macro_min_time_conc, macro_min_zone_count, macro_cluster_pct,
+        )
+        for wr in window_ranges:
+            wr.is_macro = True
+        macro_raw.extend(window_ranges)
+
+    # Dedup macro ranges against each other only (not against inner ranges)
+    macro_ranges: list[ZoneRange] = []
+    for zr in macro_raw:
+        is_dup = False
+        for existing in macro_ranges:
+            high_close = abs(existing.high - zr.high) / (zr.high + 1e-8) < 0.03
+            low_close = abs(existing.low - zr.low) / (zr.low + 1e-8) < 0.03
+            time_close = abs(existing.start - zr.start) <= max_bars
+            if high_close and low_close and time_close:
+                if zr.concentration > existing.concentration:
+                    macro_ranges.remove(existing)
+                else:
+                    is_dup = True
+                break
+        if not is_dup:
+            macro_ranges.append(zr)
+
+    # Break detection on macro ranges
+    for r in macro_ranges:
+        for i in range(r.confirmed, min(r.start + max_bars, n)):
+            if closes[i] < r.support.bottom:
+                r.broken = True
+                r.broken_dir = 2
+                r.broken_bar = i
+                break
+            elif closes[i] > r.resistance.top:
+                r.broken = True
+                r.broken_dir = 1
+                r.broken_bar = i
+                break
+
+    ranges.extend(macro_ranges)
+
     # --- Step 5: Build active_ranges_per_bar ---
     active_ranges = [[] for _ in range(n)]
     for r in ranges:
         end_bar = min(r.start + max_bars, n)
         for i in range(r.confirmed, end_bar):
-            if r.broken and i >= r.broken_bar:
+            if r.recaptured:
+                # Skip the brief broken period (broken_bar to recapture_bar)
+                if r.broken_bar <= i < r.recapture_bar:
+                    continue
+            elif r.broken and i >= r.broken_bar:
                 break
             active_ranges[i].append(r)
 
@@ -500,30 +587,19 @@ def detect_ranges_v2(
 # ---------------------------------------------------------------------------
 
 def compute_range_tp_sl_labels(highs, lows, closes, actions, swept_levels, signal_map, horizon=18):
-    """Compute TP/SL labels using zone boundaries for structural SL.
+    """Compute MFE (max favorable excursion) + SL labels using range geometry.
 
-    Key difference from sfp_compute_tp_sl_labels:
-      SL = distance from entry to zone boundary (structural invalidation level),
-           NOT max adverse excursion. This produces consistent, predictable SL labels.
+    MFE = max favorable price move (as fraction of entry) before SL hit or
+    horizon expiry.  quality = 1 if MFE > SL distance (profitable signal).
 
-    For longs:
-      Entry = swept_level (swing low that was swept)
-      SL    = (entry - support.bottom * (1 - buffer)) / entry
-      TP    = max favorable excursion within horizon
-      Win   = stop not hit AND end_close > entry
+    SL = structural distance beyond tested boundary with 0.2% buffer.
 
-    For shorts:
-      Entry = swept_level (swing high that was swept)
-      SL    = (resistance.top * (1 + buffer) - entry) / entry
-      TP    = max favorable excursion within horizon
-      Win   = stop not hit AND end_close < entry
-
-    Clips TP to [0.001, 0.10], SL to [0.001, 0.08].
+    Returns: (quality, mfe_labels, sl_labels)
     """
     length = len(actions)
-    tp_labels = np.zeros(length, dtype=np.float32)
-    sl_labels = np.zeros(length, dtype=np.float32)
     quality = np.zeros(length, dtype=np.int64)
+    mfe_labels = np.zeros(length, dtype=np.float32)
+    sl_labels = np.zeros(length, dtype=np.float32)
 
     stop_buffer = 0.002  # 0.2% beyond zone boundary
 
@@ -545,37 +621,37 @@ def compute_range_tp_sl_labels(highs, lows, closes, actions, swept_levels, signa
             continue
 
         r = sig.range_ref
-
-        future_highs = highs[i + 1 : i + 1 + horizon]
-        future_lows = lows[i + 1 : i + 1 + horizon]
-        max_high = np.max(future_highs)
-        min_low = np.min(future_lows)
-        end_close = closes[i + horizon]
+        range_height = r.resistance.level - r.support.level
+        if range_height <= 0:
+            actions[i] = 0
+            continue
 
         if actions[i] == 1:  # long
-            # TP = max favorable excursion from entry
-            tp = (max_high - entry) / entry
-            # SL = structural distance to zone bottom (invalidation)
             stop_price = r.support.bottom * (1 - stop_buffer)
             sl = max((entry - stop_price) / entry, 0.001)
-            # Win if stop not hit AND end close favorable
-            stop_hit = min_low <= stop_price
-            profitable = not stop_hit and end_close > entry
         else:  # short
-            # TP = max favorable excursion from entry
-            tp = (entry - min_low) / entry
-            # SL = structural distance to zone top (invalidation)
             stop_price = r.resistance.top * (1 + stop_buffer)
             sl = max((stop_price - entry) / entry, 0.001)
-            # Win if stop not hit AND end close favorable
-            stop_hit = max_high >= stop_price
-            profitable = not stop_hit and end_close < entry
 
-        quality[i] = 1 if profitable else 0
-        tp_labels[i] = np.clip(tp, 0.001, 0.10)
         sl_labels[i] = np.clip(sl, 0.001, 0.08)
 
-    return quality, tp_labels, sl_labels
+        # Track MFE: max favorable move before SL hit or horizon expiry
+        mfe = 0.0
+        for j in range(i + 1, min(i + 1 + horizon, length)):
+            if actions[i] == 1:  # long
+                if lows[j] <= stop_price:
+                    break
+                favorable = (highs[j] - entry) / entry
+            else:  # short
+                if highs[j] >= stop_price:
+                    break
+                favorable = (entry - lows[j]) / entry
+            mfe = max(mfe, favorable)
+
+        mfe_labels[i] = np.clip(mfe, 0.0, 0.15)
+        quality[i] = 1 if mfe > sl else 0
+
+    return quality, mfe_labels, sl_labels
 
 
 # ---------------------------------------------------------------------------
@@ -607,10 +683,14 @@ def generate_labels(highs, lows, closes, opens, tf_key="4h"):
         max_height_pct=height_max,
         min_zone_count=params.get("min_zone_count", 2),
         min_time_concentration=params.get("min_time_concentration", 0.80),
+        recapture_window=params.get("recapture_window", 5),
     )
     n_post = sum(1 for r in all_ranges if r.support.count == 1 or r.resistance.count == 1)
-    n_primary = len(all_ranges) - n_post
-    print(f"    Found {len(all_ranges)} ranges ({n_primary} primary, {n_post} post-break)")
+    n_macro = sum(1 for r in all_ranges if r.is_macro)
+    n_recaptured = sum(1 for r in all_ranges if r.recaptured)
+    n_primary = len(all_ranges) - n_post - n_macro
+    print(f"    Found {len(all_ranges)} ranges ({n_primary} primary, {n_post} post-break, "
+          f"{n_macro} macro, {n_recaptured} recaptured)")
 
     # --- SFP detection (n=5 and n=10, merge) ---
     reclaim_windows = {5: 1, 10: 3}
@@ -749,16 +829,20 @@ def generate_labels(highs, lows, closes, opens, tf_key="4h"):
     n_short = int(np.sum(actions == 2))
     print(f"    Boundary-filtered: {n_boundary} signals ({n_long} long, {n_short} short)")
 
-    # --- TP/SL labels (range-based: structural SL from zone boundaries) ---
-    quality, tp_labels, sl_labels = compute_range_tp_sl_labels(
+    # --- MFE/SL labels ---
+    quality, mfe_labels, sl_labels = compute_range_tp_sl_labels(
         highs, lows, closes, actions, swept_levels, signal_map, horizon=18,
     )
-    n_profitable = int(np.sum((actions != 0) & (quality == 1)))
     total_final = int(np.sum(actions != 0))
     if total_final > 0:
-        print(f"  [Range-SFP/{tf_key}] Funnel: {total_final} signals -> "
-              f"{n_profitable} profitable ({n_profitable / total_final * 100:.1f}%)")
+        n_prof = int(np.sum((actions != 0) & (quality == 1)))
+        mask = actions != 0
+        avg_mfe = float(np.mean(mfe_labels[mask]))
+        avg_sl = float(np.mean(sl_labels[mask]))
+        print(f"  [Range-SFP/{tf_key}] {total_final} signals -> "
+              f"profitable: {n_prof} ({n_prof/total_final*100:.0f}%) | "
+              f"avg MFE: {avg_mfe*100:.2f}% | avg SL: {avg_sl*100:.2f}%")
     else:
         print(f"  [Range-SFP/{tf_key}] No signals detected")
 
-    return actions, quality, tp_labels, sl_labels, swept_levels, signal_map, all_ranges, active_per_bar
+    return actions, quality, mfe_labels, sl_labels, swept_levels, signal_map, all_ranges, active_per_bar

@@ -1,4 +1,4 @@
-"""Liq+Range+SFP classifier training: predict P(win) for triple-filtered signals.
+"""Liq+Range+SFP model training: P(profitable) gate + MFE quantile regression.
 
 Usage:
     python -m src.train_liq_range_sfp              # all TFs, all assets
@@ -55,16 +55,17 @@ MODEL_FILE = "best_model_liq_range_sfp.pth"
 
 TF_HOURS = {"15min": 0.25, "1h": 1.0, "4h": 4.0}
 TF_KEYS = {"15min": "15m", "1h": "1h", "4h": "4h"}
+WINDOW_BY_TF = {"15m": 120, "1h": 48, "4h": 30}
 TRAIN_START = "2018-01-01"
 print(f"Training on: {TIMEFRAMES} | Assets: {SELECTED_ASSETS} | Start: {TRAIN_START} | Model: {MODEL_FILE}")
 
-N_FEATURES = 24
+N_FEATURES = 30
 
 
 def build_features(df, actions, signal_map, tf_hours, asset_id=1.0):
-    """Build 24 Liq+Range+SFP features.
+    """Build 30 Liq+Range+SFP features.
 
-    6 range + 6 liquidation + 6 SFP candle + 6 context.
+    6 range + 6 liquidation + 6 SFP candle + 6 context + 6 range fingerprint.
     """
     n = len(df)
     highs = df["High"].values
@@ -182,6 +183,31 @@ def build_features(df, actions, signal_map, tf_hours, asset_id=1.0):
     feat["tf_hours"] = tf_hours / 4.0
     feat["asset_id"] = asset_id
 
+    # --- Range fingerprint features (6) ---
+    signal_type_arr = np.zeros(n, dtype=np.float32)
+    is_recaptured_arr = np.zeros(n, dtype=np.float32)
+    is_nested_arr = np.zeros(n, dtype=np.float32)
+    touch_symmetry_arr = np.zeros(n, dtype=np.float32)
+    boundary_rejection_avg_arr = np.zeros(n, dtype=np.float32)
+    range_position_arr = np.zeros(n, dtype=np.float32)
+
+    for i, sig in signal_map.items():
+        signal_type_arr[i] = float(sig.signal_type)
+        is_recaptured_arr[i] = sig.is_recaptured
+        is_nested_arr[i] = sig.is_nested
+        touch_symmetry_arr[i] = sig.touch_symmetry
+        r = sig.range_ref
+        range_h = r.high - r.low
+        boundary_rejection_avg_arr[i] = np.clip(sig.boundary_rejection_avg, 0, 2.0)
+        range_position_arr[i] = sig.range_position
+
+    feat["signal_type"] = signal_type_arr
+    feat["is_recaptured"] = is_recaptured_arr
+    feat["is_nested"] = is_nested_arr
+    feat["touch_symmetry"] = touch_symmetry_arr
+    feat["boundary_rejection_avg"] = boundary_rejection_avg_arr
+    feat["range_position"] = range_position_arr
+
     # Drop warmup
     drop_n = 30
     feat = feat.iloc[drop_n:].reset_index(drop=True)
@@ -212,7 +238,7 @@ def _process_one_tf(args):
     if "timestamp" in df.columns:
         df = df[df["timestamp"] >= TRAIN_START].reset_index(drop=True)
 
-    actions, quality, tp_labels, sl_labels, swept_levels, signal_map = generate_labels(
+    actions, quality, mfe, sl_labels, swept_levels, signal_map = generate_labels(
         df["High"].values, df["Low"].values,
         df["Close"].values, df["Open"].values,
         volumes=df["Volume"].values if "Volume" in df.columns else None,
@@ -225,7 +251,7 @@ def _process_one_tf(args):
 
     drop_n = 30
     quality = quality[drop_n:]
-    tp_labels = tp_labels[drop_n:]
+    mfe = mfe[drop_n:]
     sl_labels = sl_labels[drop_n:]
 
     feat_values = feat.values.astype(np.float32)
@@ -246,19 +272,19 @@ def _process_one_tf(args):
         "train_feat": feat_values[:split_idx],
         "train_actions": actions[:split_idx],
         "train_quality": quality[:split_idx],
-        "train_tp": tp_labels[:split_idx],
+        "train_mfe": mfe[:split_idx],
         "train_sl": sl_labels[:split_idx],
         "test_feat": feat_values[split_idx:],
         "test_actions": actions[split_idx:],
         "test_quality": quality[split_idx:],
-        "test_tp": tp_labels[split_idx:],
+        "test_mfe": mfe[split_idx:],
         "test_sl": sl_labels[split_idx:],
     }
 
 
 def load_data_set():
     from multiprocessing import Pool
-    from server.config import WINDOW_BY_TF
+
 
     work_items = []
     for asset_name in SELECTED_ASSETS:
@@ -287,16 +313,17 @@ def load_data_set():
         tk = result["tf_key"]
         if tk not in tf_groups:
             tf_groups[tk] = {k: [] for k in [
-                "train_feat", "train_actions", "train_quality", "train_tp", "train_sl",
-                "test_feat", "test_actions", "test_quality", "test_tp", "test_sl",
+                "train_feat", "train_actions",
+                "train_quality", "train_mfe", "train_sl",
+                "test_feat", "test_actions",
+                "test_quality", "test_mfe", "test_sl",
             ]}
         g = tf_groups[tk]
         for split in ["train", "test"]:
             g[f"{split}_feat"].append(result[f"{split}_feat"])
             g[f"{split}_actions"].append(result[f"{split}_actions"])
-            g[f"{split}_quality"].append(result[f"{split}_quality"])
-            g[f"{split}_tp"].append(result[f"{split}_tp"])
-            g[f"{split}_sl"].append(result[f"{split}_sl"])
+            for k in ["quality", "mfe", "sl"]:
+                g[f"{split}_{k}"].append(result[f"{split}_{k}"])
 
     if not tf_groups:
         print("ERROR: No training data loaded!")
@@ -326,7 +353,7 @@ def load_data_set():
             train_feat,
             np.concatenate(g["train_actions"]),
             np.concatenate(g["train_quality"]),
-            np.concatenate(g["train_tp"]),
+            np.concatenate(g["train_mfe"]),
             np.concatenate(g["train_sl"]),
             window=window,
         )
@@ -334,7 +361,7 @@ def load_data_set():
             test_feat,
             np.concatenate(g["test_actions"]),
             np.concatenate(g["test_quality"]),
-            np.concatenate(g["test_tp"]),
+            np.concatenate(g["test_mfe"]),
             np.concatenate(g["test_sl"]),
             window=window,
         )
@@ -350,66 +377,103 @@ def load_data_set():
     return train_loaders, test_loaders, n_features
 
 
-def evaluate(model, test_loaders, criterion, tp_labels_raw, sl_labels_raw):
-    """Evaluate classifier at multiple confidence thresholds."""
+def quantile_loss(pred, target, tau):
+    """Pinball / quantile loss."""
+    err = target - pred
+    return torch.max(tau * err, (tau - 1) * err).mean()
+
+
+def evaluate(model, test_loaders):
+    """Evaluate: classification gate + MFE-based WR at predicted TP levels.
+
+    Returns (test_loss, results_dict).
+    """
     model.eval()
-    all_logits = []
+    all_cls_prob = []
+    all_tp1_pred = []
+    all_tp2_pred = []
     all_quality = []
+    all_mfe = []
+    all_sl = []
     total_loss = 0
     n_batches = 0
 
     with torch.no_grad():
         for loader in test_loaders.values():
-            for x, direction, q, tp, sl in loader:
+            for x, direction, q, mfe, sl in loader:
                 x = x.to(device)
                 q_t = q.to(device).float()
+                mfe_t = mfe.to(device).float()
 
-                logit = model(x)
-                loss = criterion(logit, q_t)
-                total_loss += loss.item()
+                out = model(x)  # (B, 3)
+                cls_logit = out[:, 0]
+                tp1_pred = out[:, 1]
+                tp2_pred = out[:, 2]
+
+                cls_loss = nn.functional.binary_cross_entropy_with_logits(cls_logit, q_t)
+                total_loss += cls_loss.item()
                 n_batches += 1
 
-                all_logits.append(logit.cpu())
+                all_cls_prob.append(torch.sigmoid(cls_logit).cpu())
+                all_tp1_pred.append(tp1_pred.cpu())
+                all_tp2_pred.append(tp2_pred.cpu())
                 all_quality.append(q.cpu())
+                all_mfe.append(mfe.cpu())
+                all_sl.append(sl.cpu())
 
-    logits = torch.cat(all_logits)
-    quality = torch.cat(all_quality)
-    probs = torch.sigmoid(logits)
+    cls_prob = torch.cat(all_cls_prob)    # (N,)
+    tp1_pred = torch.cat(all_tp1_pred)   # (N,)
+    tp2_pred = torch.cat(all_tp2_pred)   # (N,)
+    quality = torch.cat(all_quality)     # (N,)
+    mfe = torch.cat(all_mfe)            # (N,)
+    sl = torch.cat(all_sl)              # (N,)
 
     base_wr = (quality == 1).float().mean().item() * 100
-    n_total = len(quality)
+    avg_tp1_all = tp1_pred.mean().item() * 100
+    avg_tp2_all = tp2_pred.mean().item() * 100
+    print(f"    Base WR: {base_wr:.0f}% | Pred TP1: {avg_tp1_all:.2f}% | Pred TP2: {avg_tp2_all:.2f}%")
 
     results = {}
     for thresh in [0.3, 0.4, 0.5, 0.6, 0.7]:
-        take = probs > thresh
+        take = cls_prob > thresh
         n_take = take.sum().item()
-        if n_take > 0:
-            n_win = (quality[take] == 1).sum().item()
-            precision = n_win / n_take * 100
-            recall = n_win / max((quality == 1).sum().item(), 1) * 100
-            take_idx = take.numpy()
-            avg_tp = float(np.mean(tp_labels_raw[take_idx])) * 100
-            avg_sl = float(np.mean(sl_labels_raw[take_idx])) * 100
-            ev = (precision / 100) * avg_tp - (1 - precision / 100) * avg_sl
-        else:
-            precision = recall = avg_tp = avg_sl = ev = 0
-        results[thresh] = (n_take, precision, recall, avg_tp, avg_sl, ev)
+        if n_take == 0:
+            results[thresh] = {"n": 0, "wr": 0, "tp1_wr": 0, "tp2_wr": 0, "ev1": 0, "ev2": 0}
+            continue
 
-    prof_probs = probs[quality == 1]
-    lose_probs = probs[quality == 0]
-    if len(prof_probs) > 0 and len(lose_probs) > 0:
-        print(
-            f"    P(win) spread — "
-            f"winners: {prof_probs.mean().item():.3f} vs "
-            f"losers: {lose_probs.mean().item():.3f} | "
-            f"base WR: {base_wr:.0f}%"
-        )
+        # Gate WR: fraction of taken trades that are profitable (MFE > SL)
+        q_taken = quality[take]
+        wr = (q_taken == 1).float().mean().item() * 100
+
+        # TP1 WR: MFE >= predicted TP1
+        mfe_taken = mfe[take]
+        sl_taken = sl[take]
+        tp1_taken = tp1_pred[take]
+        tp2_taken = tp2_pred[take]
+
+        tp1_wr = (mfe_taken >= tp1_taken).float().mean().item() * 100
+        tp2_wr = (mfe_taken >= tp2_taken).float().mean().item() * 100
+
+        # EV: WR * avg_TP - (1-WR) * avg_SL
+        avg_tp1 = tp1_taken.mean().item() * 100
+        avg_tp2 = tp2_taken.mean().item() * 100
+        avg_sl_taken = sl_taken.mean().item() * 100
+        ev1 = (tp1_wr / 100) * avg_tp1 - (1 - tp1_wr / 100) * avg_sl_taken
+        ev2 = (tp2_wr / 100) * avg_tp2 - (1 - tp2_wr / 100) * avg_sl_taken
+
+        results[thresh] = {
+            "n": n_take, "wr": wr,
+            "tp1_wr": tp1_wr, "tp2_wr": tp2_wr,
+            "avg_tp1": avg_tp1, "avg_tp2": avg_tp2,
+            "avg_sl": avg_sl_taken,
+            "ev1": ev1, "ev2": ev2,
+        }
 
     return total_loss / max(n_batches, 1), results
 
 
 def train():
-    from server.config import WINDOW_BY_TF
+
     WINDOW = max(WINDOW_BY_TF.values())
 
     train_loaders, test_loaders, n_features = load_data_set()
@@ -426,27 +490,17 @@ def train():
     n_params = sum(p.numel() for p in model.parameters())
     print(f"LiqRangeSFPClassifier: {n_params:,} parameters")
 
-    # Compute class weight across all train loaders
+    # Compute class weight for gate head
     all_q = []
     for loader in train_loaders.values():
-        for x, direction, q, tp, sl in loader:
+        for x, direction, q, mfe, sl in loader:
             all_q.append(q)
-    all_q = torch.cat(all_q)
+    all_q = torch.cat(all_q)  # (N,)
     n_pos = (all_q == 1).sum().item()
     n_neg = (all_q == 0).sum().item()
-    pos_weight = torch.tensor([n_neg / max(n_pos, 1)]).to(device)
-    print(f"Class balance — wins: {n_pos}, losses: {n_neg}, pos_weight: {pos_weight.item():.2f}")
+    pos_weight = torch.tensor([n_neg / max(n_pos, 1)], device=device)
+    print(f"  Gate: wins={n_pos}, losses={n_neg}, pos_weight={pos_weight.item():.2f}")
 
-    # Collect raw TP/SL for test set EV computation across all test loaders
-    test_tp_raw, test_sl_raw = [], []
-    for loader in test_loaders.values():
-        for x, direction, q, tp, sl in loader:
-            test_tp_raw.append(tp.numpy())
-            test_sl_raw.append(sl.numpy())
-    test_tp_raw = np.concatenate(test_tp_raw)
-    test_sl_raw = np.concatenate(test_sl_raw)
-
-    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
     resume_lr = 1e-4 if RESUME else 1e-3
     optimizer = torch.optim.AdamW(model.parameters(), lr=resume_lr, weight_decay=1e-3)
     total_train_batches = sum(len(loader) for loader in train_loaders.values())
@@ -465,12 +519,36 @@ def train():
         train_loss = 0
         n_batches = 0
         for loader in train_loaders.values():
-            for x, direction, q, tp, sl in loader:
+            for x, direction, q, mfe, sl in loader:
                 x = x.to(device)
-                q_t = q.to(device).float()
+                q_t = q.to(device).float()      # (B,)
+                mfe_t = mfe.to(device).float()   # (B,)
+                sl_t = sl.to(device).float()     # (B,)
 
-                logit = model(x)
-                loss = criterion(logit, q_t)
+                out = model(x)                   # (B, 3)
+                cls_logit = out[:, 0]             # (B,)
+                tp1_pred = out[:, 1]              # (B,)
+                tp2_pred = out[:, 2]              # (B,)
+
+                # Classification loss: BCE on quality gate
+                cls_loss = nn.functional.binary_cross_entropy_with_logits(
+                    cls_logit, q_t, pos_weight=pos_weight,
+                )
+
+                # Regression loss: quantile on MFE, only for profitable signals
+                profitable_mask = q_t > 0.5
+                if profitable_mask.any():
+                    mfe_prof = mfe_t[profitable_mask]
+                    tp1_prof = tp1_pred[profitable_mask]
+                    tp2_prof = tp2_pred[profitable_mask]
+                    reg_loss = (
+                        quantile_loss(tp1_prof, mfe_prof, tau=0.3) +
+                        quantile_loss(tp2_prof, mfe_prof, tau=0.7)
+                    )
+                else:
+                    reg_loss = torch.tensor(0.0, device=device)
+
+                loss = cls_loss + reg_loss
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -480,35 +558,45 @@ def train():
                 train_loss += loss.item()
                 n_batches += 1
 
-        test_loss, results = evaluate(model, test_loaders, criterion, test_tp_raw, test_sl_raw)
+        test_loss, results = evaluate(model, test_loaders)
         avg_train_loss = train_loss / max(n_batches, 1)
 
-        r50 = results.get(0.5, (0, 0, 0, 0, 0, 0))
+        # Epoch summary at P>0.5
+        r50 = results.get(0.5, {"n": 0, "tp1_wr": 0, "tp2_wr": 0, "ev1": 0, "ev2": 0})
         print(
             f"Epoch {epoch + 1:3d} | "
             f"Loss: {avg_train_loss:.4f} / {test_loss:.4f} | "
-            f"P>0.5: {r50[0]} trades, {r50[1]:.0f}% WR, EV={r50[5]:+.3f}%"
+            f"n={r50['n']} | "
+            f"TP1: {r50['tp1_wr']:.0f}%WR EV={r50['ev1']:+.2f}% | "
+            f"TP2: {r50['tp2_wr']:.0f}%WR EV={r50['ev2']:+.2f}%"
         )
 
         if (epoch + 1) % 10 == 0:
-            print("  --- Confidence threshold analysis ---")
-            for thresh, (n, prec, rec, avg_tp, avg_sl, ev) in sorted(results.items()):
+            print(f"  --- Threshold analysis ---")
+            for thresh in sorted(results.keys()):
+                r = results[thresh]
+                if r["n"] == 0:
+                    continue
                 print(
-                    f"    P(win) > {thresh}: {n} trades | "
-                    f"WR: {prec:.0f}% | Recall: {rec:.0f}% | "
-                    f"TP: {avg_tp:.2f}% | SL: {avg_sl:.2f}% | EV: {ev:+.3f}%"
+                    f"    P > {thresh}: {r['n']} trades | "
+                    f"Gate WR: {r['wr']:.0f}% | "
+                    f"TP1: {r['tp1_wr']:.0f}%WR TP={r.get('avg_tp1',0):.2f}% EV={r['ev1']:+.3f}% | "
+                    f"TP2: {r['tp2_wr']:.0f}%WR TP={r.get('avg_tp2',0):.2f}% EV={r['ev2']:+.3f}% | "
+                    f"SL={r.get('avg_sl',0):.2f}%"
                 )
 
-        # Save best model by weighted EV score
+        # Save best model by TP1 EV score
         score = 0.0
         for thresh, weight in [(0.4, 1.0), (0.5, 2.0), (0.6, 3.0)]:
-            n_t, p, _, atp, asl, ev = results.get(thresh, (0, 0, 0, 0, 0, 0))
+            r = results.get(thresh, {"n": 0, "ev1": 0, "tp1_wr": 0})
+            n_t = r["n"]
+            ev = r["ev1"]
             if n_t >= 10 and ev > 0:
                 score += weight * ev * min(n_t, 200)
         if score > best_score:
             best_score = score
             torch.save(model.state_dict(), MODEL_FILE)
-            print(f"  -> Saved best model (score: {score:.1f})")
+            print(f"  -> Saved best model (TP1 score: {score:.1f})")
 
         if test_loss < best_loss:
             best_loss = test_loss
@@ -521,15 +609,20 @@ def train():
 
     # Final evaluation with best model
     model.load_state_dict(torch.load(MODEL_FILE, weights_only=True))
-    _, results = evaluate(model, test_loaders, criterion, test_tp_raw, test_sl_raw)
+    _, results = evaluate(model, test_loaders)
     print(f"\n{'=' * 60}")
-    print(f"Best model — Classification results")
+    print(f"Best model — MFE regression results")
     print(f"{'=' * 60}")
-    for thresh, (n, prec, rec, avg_tp, avg_sl, ev) in sorted(results.items()):
+    for thresh in sorted(results.keys()):
+        r = results[thresh]
+        if r["n"] == 0:
+            continue
         print(
-            f"  P(win) > {thresh}: {n} trades | "
-            f"WR: {prec:.0f}% | Recall: {rec:.0f}% | "
-            f"TP: {avg_tp:.2f}% | SL: {avg_sl:.2f}% | EV: {ev:+.3f}%"
+            f"  P > {thresh}: {r['n']} trades | "
+            f"Gate WR: {r['wr']:.0f}% | "
+            f"TP1: {r['tp1_wr']:.0f}%WR TP={r.get('avg_tp1',0):.2f}% EV={r['ev1']:+.3f}% | "
+            f"TP2: {r['tp2_wr']:.0f}%WR TP={r.get('avg_tp2',0):.2f}% EV={r['ev2']:+.3f}% | "
+            f"SL={r.get('avg_sl',0):.2f}%"
         )
 
 
