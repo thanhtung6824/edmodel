@@ -1,6 +1,6 @@
 """Permutation feature importance for Liq+Range+SFP model.
 
-Shuffles each of the 37 features independently on the test set, measures
+Shuffles each of the 18 features independently on the test set, measures
 TP1 EV degradation at P>0.5. Largest degradation = most important feature.
 
 Usage:
@@ -13,25 +13,19 @@ import numpy as np
 import torch
 from torch import nn
 
-from src.train_liq_range_sfp import load_data_set, N_FEATURES, WINDOW_BY_TF, device
 from src.models.liq_range_sfp_model import LiqRangeSFPClassifier
 
+device = torch.accelerator.current_accelerator().type if torch.accelerator.is_available() else "cpu"
 MODEL_FILE = "best_model_liq_range_sfp.pth"
 
 # Feature names in order (must match build_features output)
 FEATURE_NAMES = [
-    "range_height_pct", "range_touches_norm", "range_concentration",
-    "range_age", "sweep_depth_range", "reclaim_strength_range",
-    "n_liq_swept_norm", "weighted_liq_swept", "max_leverage_norm",
-    "liq_cascade_depth", "liq_cluster_density", "n_swings_with_liq",
-    "body_ratio", "wick_ratio", "vol_spike",
-    "close_position", "zone_sl_dist", "zone_tp_dist",
-    "rsi", "trend_strength", "ms_alignment",
-    "ms_strength", "tf_hours", "asset_id",
-    "signal_type", "is_recaptured", "is_nested",
-    "touch_symmetry", "boundary_rejection_avg", "range_position",
-    "direction_feat", "vwap_distance", "volume_imbalance",
-    "htf_trend", "htf_rsi", "htf_ms_direction", "htf_ms_strength",
+    "range_height_pct", "range_age", "sweep_depth_range",
+    "reclaim_strength_range", "weighted_liq_swept", "max_leverage_norm",
+    "liq_cascade_depth", "wick_ratio", "zone_sl_dist",
+    "trend_strength", "ms_alignment", "asset_id",
+    "is_recaptured", "touch_symmetry", "range_position",
+    "direction_feat", "htf_trend", "htf_rsi",
 ]
 
 
@@ -113,9 +107,13 @@ def main():
         if idx + 1 < len(args):
             threshold = float(args[idx + 1])
 
+    # Override sys.argv before importing train module (it parses argv at import time)
+    sys.argv = [sys.argv[0], "4h", "1h", "15min"]
+
     print(f"Feature importance at P>{threshold}")
     print(f"Loading data...")
 
+    from src.train_liq_range_sfp import load_data_set, N_FEATURES, WINDOW_BY_TF, device
     train_loaders, test_loaders, n_features = load_data_set()
 
     WINDOW = max(WINDOW_BY_TF.values())
