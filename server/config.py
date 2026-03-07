@@ -22,7 +22,7 @@ SIGNAL_HORIZON = 18  # bars to track outcome (matches backtest)
 MODEL_PATH = "best_model_liq_range_sfp.pth"
 SCALER_PATH = "liq_range_sfp_scaler.joblib"
 MODEL_CONFIDENCE = 0.3  # P(win) threshold
-N_FEATURES = 24
+N_FEATURES = 30
 
 LIVE_SIGNALS_PATH = "signals_live.json"
 
