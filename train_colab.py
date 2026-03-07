@@ -1277,8 +1277,10 @@ def load_data_set():
         for tf in TIMEFRAMES:
             work_items.append((asset_name, cfg["prefix"], cfg["asset_id"], tf, TF_KEYS[tf], TF_HOURS[tf]))
     print(f"\nProcessing {len(work_items)} asset/TF combos...")
-    # Use sequential processing on Colab (avoids multiprocessing issues)
-    results = [_process_one_tf(item) for item in work_items]
+    # Use multiprocessing to parallelize label generation across asset/TF combos
+    from multiprocessing import Pool
+    with Pool() as pool:
+        results = pool.map(_process_one_tf, work_items)
 
     tf_groups = {}
     keys = ["train_feat", "train_actions", "train_quality", "train_mfe", "train_sl",
