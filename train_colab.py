@@ -24,8 +24,8 @@ from dataclasses import dataclass, field
 device = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"Using {device} device")
 USE_AMP = device == "cuda"
-BATCH_SIZE = 256 if device == "cuda" else 128
-NUM_WORKERS = 2 if device == "cuda" else 0
+BATCH_SIZE = 512 if device == "cuda" else 128
+NUM_WORKERS = 4 if device == "cuda" else 0
 
 # ============================================================================
 # CLI
