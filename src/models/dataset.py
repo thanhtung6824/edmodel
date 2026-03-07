@@ -5,7 +5,7 @@ from torch.utils.data import Dataset
 
 class SFPDataset(Dataset):
     def __init__(self, scaled_data, actions, quality, mfe, sl_labels,
-                 ttp=None, asset_ids=None, tf_ids=None, window=30):
+                 ttp=None, asset_ids=None, tf_ids=None, mae=None, window=30):
         self.data = scaled_data
         self.window = window
 
@@ -24,6 +24,7 @@ class SFPDataset(Dataset):
         self.ttp = ttp if ttp is not None else np.zeros(len(actions), dtype=np.float32)
         self.asset_ids = asset_ids if asset_ids is not None else np.zeros(len(actions), dtype=np.int64)
         self.tf_ids = tf_ids if tf_ids is not None else np.zeros(len(actions), dtype=np.int64)
+        self.mae = mae if mae is not None else np.zeros(len(actions), dtype=np.float32)
 
     def __len__(self):
         return len(self.indices)
@@ -38,6 +39,7 @@ class SFPDataset(Dataset):
         ttp = self.ttp[real_idx]
         asset_id = self.asset_ids[real_idx]
         tf_id = self.tf_ids[real_idx]
+        mae = self.mae[real_idx]
         return (
             torch.FloatTensor(x),
             torch.LongTensor([direction]).squeeze(),
@@ -47,4 +49,5 @@ class SFPDataset(Dataset):
             torch.FloatTensor([ttp]).squeeze(),   # scalar TTP
             torch.LongTensor([asset_id]).squeeze(),  # asset ID
             torch.LongTensor([tf_id]).squeeze(),     # timeframe ID
+            torch.FloatTensor([mae]).squeeze(),   # scalar MAE
         )

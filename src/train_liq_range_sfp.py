@@ -1,10 +1,12 @@
-"""Liq+Range+SFP model training: P(profitable) gate + MFE quantile regression.
+"""Liq+Range+SFP model training: P(profitable) gate + MFE quantile regression + SL regression.
 
 Usage:
     python -m src.train_liq_range_sfp              # all TFs, all assets
     python -m src.train_liq_range_sfp 1h           # 1h only
     python -m src.train_liq_range_sfp 4h 1h 15min --assets btc gold
     python -m src.train_liq_range_sfp 4h 1h 15min --resume
+    python -m src.train_liq_range_sfp --walk-forward    # rolling walk-forward validation
+    python -m src.train_liq_range_sfp --ensemble 3      # train 3 models with different seeds
 """
 
 import os
@@ -38,6 +40,17 @@ args = sys.argv[1:]
 RESUME = "--resume" in args
 if RESUME:
     args.remove("--resume")
+WALK_FORWARD = "--walk-forward" in args
+if WALK_FORWARD:
+    args.remove("--walk-forward")
+ENSEMBLE_N = 1
+if "--ensemble" in args:
+    idx = args.index("--ensemble")
+    if idx + 1 < len(args):
+        ENSEMBLE_N = int(args[idx + 1])
+        args = args[:idx] + args[idx + 2:]
+    else:
+        args = args[:idx]
 if "--assets" in args:
     idx = args.index("--assets")
     TIMEFRAMES = args[:idx] if idx > 0 else ["4h", "1h", "15min"]
@@ -58,7 +71,8 @@ TF_HOURS = {"15min": 0.25, "1h": 1.0, "4h": 4.0}
 TF_KEYS = {"15min": "15m", "1h": "1h", "4h": "4h"}
 WINDOW_BY_TF = {"15m": 120, "1h": 48, "4h": 30}
 TRAIN_START = "2018-01-01"
-print(f"Training on: {TIMEFRAMES} | Assets: {SELECTED_ASSETS} | Start: {TRAIN_START} | Model: {MODEL_FILE}")
+mode_str = "walk-forward" if WALK_FORWARD else ("ensemble=" + str(ENSEMBLE_N) if ENSEMBLE_N > 1 else "standard")
+print(f"Training on: {TIMEFRAMES} | Assets: {SELECTED_ASSETS} | Start: {TRAIN_START} | Model: {MODEL_FILE} | Mode: {mode_str}")
 
 N_FEATURES = 37
 
@@ -267,7 +281,7 @@ def _process_one_tf(args):
     if "timestamp" in df.columns:
         df = df[df["timestamp"] >= TRAIN_START].reset_index(drop=True)
 
-    actions, quality, mfe, sl_labels, ttp_labels, swept_levels, signal_map = generate_labels(
+    actions, quality, mfe, sl_labels, ttp_labels, swept_levels, signal_map, mae_labels = generate_labels(
         df["High"].values, df["Low"].values,
         df["Close"].values, df["Open"].values,
         volumes=df["Volume"].values if "Volume" in df.columns else None,
@@ -283,6 +297,12 @@ def _process_one_tf(args):
     mfe = mfe[drop_n:]
     sl_labels = sl_labels[drop_n:]
     ttp_labels = ttp_labels[drop_n:]
+    mae_labels = mae_labels[drop_n:]
+
+    # Extract timestamps for walk-forward splitting
+    timestamps = None
+    if "timestamp" in df.columns:
+        timestamps = df["timestamp"].values[drop_n:]
 
     feat_values = feat.values.astype(np.float32)
     signal_mask = actions != 0
@@ -300,7 +320,7 @@ def _process_one_tf(args):
     tf_id_arr = np.full(n_bars, TF_ID_MAP.get(tf_key, 0), dtype=np.int64)
 
     split_idx = int(n_bars * 0.8)
-    return {
+    result = {
         "tf_key": tf_key,
         "label": f"{asset_name}/{tf_key}",
         "n_bars": n_bars,
@@ -312,6 +332,7 @@ def _process_one_tf(args):
         "train_mfe": mfe[:split_idx],
         "train_sl": sl_labels[:split_idx],
         "train_ttp": ttp_labels[:split_idx],
+        "train_mae": mae_labels[:split_idx],
         "train_asset_ids": asset_id_arr[:split_idx],
         "train_tf_ids": tf_id_arr[:split_idx],
         "test_feat": feat_values[split_idx:],
@@ -320,14 +341,33 @@ def _process_one_tf(args):
         "test_mfe": mfe[split_idx:],
         "test_sl": sl_labels[split_idx:],
         "test_ttp": ttp_labels[split_idx:],
+        "test_mae": mae_labels[split_idx:],
         "test_asset_ids": asset_id_arr[split_idx:],
         "test_tf_ids": tf_id_arr[split_idx:],
     }
+    # For walk-forward: include full unsplit data + timestamps
+    if timestamps is not None:
+        result["all_feat"] = feat_values
+        result["all_actions"] = actions
+        result["all_quality"] = quality
+        result["all_mfe"] = mfe
+        result["all_sl"] = sl_labels
+        result["all_ttp"] = ttp_labels
+        result["all_mae"] = mae_labels
+        result["all_asset_ids"] = asset_id_arr
+        result["all_tf_ids"] = tf_id_arr
+        result["all_timestamps"] = timestamps
+    return result
 
 
-def load_data_set():
+def load_data_set(walk_forward_fold=None):
+    """Load and prepare dataset.
+
+    Args:
+        walk_forward_fold: If provided, dict with 'train_end' and 'test_end' year strings
+                           for walk-forward splitting. None uses default 80/20 split.
+    """
     from multiprocessing import Pool
-
 
     work_items = []
     for asset_name in SELECTED_ASSETS:
@@ -345,6 +385,15 @@ def load_data_set():
 
     # Group results by tf_key
     tf_groups = {}
+    keys = [
+        "train_feat", "train_actions",
+        "train_quality", "train_mfe", "train_sl",
+        "train_ttp", "train_mae", "train_asset_ids", "train_tf_ids",
+        "test_feat", "test_actions",
+        "test_quality", "test_mfe", "test_sl",
+        "test_ttp", "test_mae", "test_asset_ids", "test_tf_ids",
+    ]
+
     for result in results:
         if result is None:
             continue
@@ -354,20 +403,25 @@ def load_data_set():
               f"{result['n_profitable']} profitable ({result['n_profitable']/result['n_signals']*100:.0f}%)")
 
         tk = result["tf_key"]
+
+        # Walk-forward: re-split by timestamp
+        if walk_forward_fold is not None and "all_timestamps" in result:
+            ts = result["all_timestamps"]
+            train_end = walk_forward_fold["train_end"]
+            test_end = walk_forward_fold["test_end"]
+            train_mask = ts < train_end
+            test_mask = (ts >= train_end) & (ts < test_end)
+            for prefix_key in ["feat", "actions", "quality", "mfe", "sl", "ttp", "mae", "asset_ids", "tf_ids"]:
+                result[f"train_{prefix_key}"] = result[f"all_{prefix_key}"][train_mask]
+                result[f"test_{prefix_key}"] = result[f"all_{prefix_key}"][test_mask]
+
         if tk not in tf_groups:
-            tf_groups[tk] = {k: [] for k in [
-                "train_feat", "train_actions",
-                "train_quality", "train_mfe", "train_sl",
-                "train_ttp", "train_asset_ids", "train_tf_ids",
-                "test_feat", "test_actions",
-                "test_quality", "test_mfe", "test_sl",
-                "test_ttp", "test_asset_ids", "test_tf_ids",
-            ]}
+            tf_groups[tk] = {k: [] for k in keys}
         g = tf_groups[tk]
         for split in ["train", "test"]:
             g[f"{split}_feat"].append(result[f"{split}_feat"])
             g[f"{split}_actions"].append(result[f"{split}_actions"])
-            for k in ["quality", "mfe", "sl", "ttp", "asset_ids", "tf_ids"]:
+            for k in ["quality", "mfe", "sl", "ttp", "mae", "asset_ids", "tf_ids"]:
                 g[f"{split}_{k}"].append(result[f"{split}_{k}"])
 
     if not tf_groups:
@@ -382,8 +436,11 @@ def load_data_set():
 
     scaler = StandardScaler()
     scaler.fit(all_train)
-    joblib.dump(scaler, "liq_range_sfp_scaler.joblib")
-    print(f"\nScaler fit on {total_train} train bars, saved to liq_range_sfp_scaler.joblib")
+    if walk_forward_fold is None:
+        joblib.dump(scaler, "liq_range_sfp_scaler.joblib")
+        print(f"\nScaler fit on {total_train} train bars, saved to liq_range_sfp_scaler.joblib")
+    else:
+        print(f"\nScaler fit on {total_train} train bars (walk-forward fold)")
 
     # Create per-TF datasets with TF-specific windows
     train_loaders = {}
@@ -403,6 +460,7 @@ def load_data_set():
             ttp=np.concatenate(g["train_ttp"]),
             asset_ids=np.concatenate(g["train_asset_ids"]),
             tf_ids=np.concatenate(g["train_tf_ids"]),
+            mae=np.concatenate(g["train_mae"]),
             window=window,
         )
         test_set = SFPDataset(
@@ -414,6 +472,7 @@ def load_data_set():
             ttp=np.concatenate(g["test_ttp"]),
             asset_ids=np.concatenate(g["test_asset_ids"]),
             tf_ids=np.concatenate(g["test_tf_ids"]),
+            mae=np.concatenate(g["test_mae"]),
             window=window,
         )
 
@@ -449,12 +508,15 @@ def quantile_loss_adaptive(pred, target, tau):
 def evaluate(model, test_loaders):
     """Evaluate: classification gate + MFE-based WR at predicted TP levels.
 
+    Uses structural SL for EV (comparable to v4). Reports model SL separately.
+
     Returns (test_loss, results_dict).
     """
     model.eval()
     all_cls_prob = []
     all_tp1_pred = []
     all_tp2_pred = []
+    all_sl_pred = []
     all_quality = []
     all_mfe = []
     all_sl = []
@@ -463,17 +525,18 @@ def evaluate(model, test_loaders):
 
     with torch.no_grad():
         for loader in test_loaders.values():
-            for x, direction, q, mfe, sl, ttp, asset_id, tf_id in loader:
+            for x, direction, q, mfe, sl, ttp, asset_id, tf_id, mae in loader:
                 x = x.to(device)
                 q_t = q.to(device).float()
                 asset_id = asset_id.to(device)
                 tf_id = tf_id.to(device)
                 direction = direction.to(device)
 
-                out = model(x, asset_ids=asset_id, tf_ids=tf_id, direction_ids=direction)  # (B, 4)
+                out = model(x, asset_ids=asset_id, tf_ids=tf_id, direction_ids=direction)  # (B, 5)
                 cls_logit = out[:, 0]
                 tp1_pred = out[:, 1]
                 tp2_pred = out[:, 2]
+                sl_pred = out[:, 4]
 
                 cls_loss = nn.functional.binary_cross_entropy_with_logits(cls_logit, q_t)
                 total_loss += cls_loss.item()
@@ -482,6 +545,7 @@ def evaluate(model, test_loaders):
                 all_cls_prob.append(torch.sigmoid(cls_logit).cpu())
                 all_tp1_pred.append(tp1_pred.cpu())
                 all_tp2_pred.append(tp2_pred.cpu())
+                all_sl_pred.append(sl_pred.cpu())
                 all_quality.append(q.cpu())
                 all_mfe.append(mfe.cpu())
                 all_sl.append(sl.cpu())
@@ -489,6 +553,7 @@ def evaluate(model, test_loaders):
     cls_prob = torch.cat(all_cls_prob)    # (N,)
     tp1_pred = torch.cat(all_tp1_pred)   # (N,)
     tp2_pred = torch.cat(all_tp2_pred)   # (N,)
+    sl_pred = torch.cat(all_sl_pred)     # (N,)
     quality = torch.cat(all_quality)     # (N,)
     mfe = torch.cat(all_mfe)            # (N,)
     sl = torch.cat(all_sl)              # (N,)
@@ -496,7 +561,9 @@ def evaluate(model, test_loaders):
     base_wr = (quality == 1).float().mean().item() * 100
     avg_tp1_all = tp1_pred.mean().item() * 100
     avg_tp2_all = tp2_pred.mean().item() * 100
-    print(f"    Base WR: {base_wr:.0f}% | Pred TP1: {avg_tp1_all:.2f}% | Pred TP2: {avg_tp2_all:.2f}%")
+    avg_sl_struct = sl.mean().item() * 100
+    avg_sl_pred_all = sl_pred.mean().item() * 100
+    print(f"    Base WR: {base_wr:.0f}% | Pred TP1: {avg_tp1_all:.2f}% | Pred TP2: {avg_tp2_all:.2f}% | Struct SL: {avg_sl_struct:.2f}% | Model SL: {avg_sl_pred_all:.2f}%")
 
     results = {}
     for thresh in [0.3, 0.4, 0.5, 0.6, 0.7]:
@@ -512,45 +579,60 @@ def evaluate(model, test_loaders):
 
         # TP1 WR: MFE >= predicted TP1
         mfe_taken = mfe[take]
-        sl_taken = sl[take]
+        sl_struct_taken = sl[take]
+        sl_model_taken = sl_pred[take]
         tp1_taken = tp1_pred[take]
         tp2_taken = tp2_pred[take]
 
         tp1_wr = (mfe_taken >= tp1_taken).float().mean().item() * 100
         tp2_wr = (mfe_taken >= tp2_taken).float().mean().item() * 100
 
-        # EV: WR * avg_TP - (1-WR) * avg_SL
+        # EV using structural SL (comparable to v4)
         avg_tp1 = tp1_taken.mean().item() * 100
         avg_tp2 = tp2_taken.mean().item() * 100
-        avg_sl_taken = sl_taken.mean().item() * 100
+        avg_sl_taken = sl_struct_taken.mean().item() * 100
         ev1 = (tp1_wr / 100) * avg_tp1 - (1 - tp1_wr / 100) * avg_sl_taken
         ev2 = (tp2_wr / 100) * avg_tp2 - (1 - tp2_wr / 100) * avg_sl_taken
+
+        # EV using model-predicted SL (floored by structural)
+        sl_eff = torch.max(sl_model_taken, sl_struct_taken)
+        avg_sl_model = sl_eff.mean().item() * 100
+        ev1_msl = (tp1_wr / 100) * avg_tp1 - (1 - tp1_wr / 100) * avg_sl_model
 
         results[thresh] = {
             "n": n_take, "wr": wr,
             "tp1_wr": tp1_wr, "tp2_wr": tp2_wr,
             "avg_tp1": avg_tp1, "avg_tp2": avg_tp2,
             "avg_sl": avg_sl_taken,
+            "avg_sl_model": avg_sl_model,
             "ev1": ev1, "ev2": ev2,
+            "ev1_msl": ev1_msl,
         }
 
     return total_loss / max(n_batches, 1), results
 
 
-def train():
+def train_one_model(train_loaders, test_loaders, n_features, model_file, seed=None):
+    """Train a single model. Returns (model, best_score, results).
 
+    Args:
+        seed: If provided, set random seeds for reproducibility.
+    """
     WINDOW = max(WINDOW_BY_TF.values())
 
-    train_loaders, test_loaders, n_features = load_data_set()
+    if seed is not None:
+        torch.manual_seed(seed)
+        np.random.seed(seed)
+        print(f"\n--- Training with seed={seed} ---")
 
     from src.models.liq_range_sfp_model import LiqRangeSFPClassifier
     model = LiqRangeSFPClassifier(n_features=n_features, window=WINDOW, hidden=48).to(device)
 
-    if RESUME and os.path.exists(MODEL_FILE):
-        model.load_state_dict(torch.load(MODEL_FILE, map_location=device, weights_only=True))
-        print(f"Resumed from {MODEL_FILE}")
+    if RESUME and os.path.exists(model_file):
+        model.load_state_dict(torch.load(model_file, map_location=device, weights_only=True))
+        print(f"Resumed from {model_file}")
     elif RESUME:
-        print(f"WARNING: --resume but {MODEL_FILE} not found, training from scratch")
+        print(f"WARNING: --resume but {model_file} not found, training from scratch")
 
     n_params = sum(p.numel() for p in model.parameters())
     print(f"LiqRangeSFPClassifier: {n_params:,} parameters")
@@ -558,7 +640,7 @@ def train():
     # Compute class weight for gate head
     all_q = []
     for loader in train_loaders.values():
-        for x, direction, q, mfe, sl, ttp, asset_id, tf_id in loader:
+        for x, direction, q, mfe, sl, ttp, asset_id, tf_id, mae in loader:
             all_q.append(q)
     all_q = torch.cat(all_q)  # (N,)
     n_pos = (all_q == 1).sum().item()
@@ -584,21 +666,23 @@ def train():
         train_loss = 0
         n_batches = 0
         for loader in train_loaders.values():
-            for x, direction, q, mfe, sl, ttp, asset_id, tf_id in loader:
+            for x, direction, q, mfe, sl, ttp, asset_id, tf_id, mae in loader:
                 x = x.to(device)
                 q_t = q.to(device).float()      # (B,)
                 mfe_t = mfe.to(device).float()   # (B,)
                 sl_t = sl.to(device).float()     # (B,)
                 ttp_t = ttp.to(device).float()   # (B,)
+                mae_t = mae.to(device).float()   # (B,)
                 asset_id = asset_id.to(device)
                 tf_id = tf_id.to(device)
                 direction = direction.to(device)
 
-                out = model(x, asset_ids=asset_id, tf_ids=tf_id, direction_ids=direction)  # (B, 4)
+                out = model(x, asset_ids=asset_id, tf_ids=tf_id, direction_ids=direction)  # (B, 5)
                 cls_logit = out[:, 0]             # (B,)
                 tp1_pred = out[:, 1]              # (B,)
                 tp2_pred = out[:, 2]              # (B,)
                 ttp_pred = out[:, 3]              # (B,)
+                sl_pred = out[:, 4]               # (B,)
 
                 # Classification loss: BCE on quality gate
                 cls_loss = nn.functional.binary_cross_entropy_with_logits(
@@ -624,7 +708,10 @@ def train():
                     reg_loss = torch.tensor(0.0, device=device)
                     ttp_loss = torch.tensor(0.0, device=device)
 
-                loss = cls_loss + reg_loss + 0.5 * ttp_loss
+                # SL loss: quantile loss on MAE at tau=0.85, ALL signals
+                sl_loss = quantile_loss(sl_pred, mae_t, tau=0.85)
+
+                loss = cls_loss + reg_loss + 0.5 * ttp_loss + 0.2 * sl_loss
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -658,7 +745,7 @@ def train():
                     f"Gate WR: {r['wr']:.0f}% | "
                     f"TP1: {r['tp1_wr']:.0f}%WR TP={r.get('avg_tp1',0):.2f}% EV={r['ev1']:+.3f}% | "
                     f"TP2: {r['tp2_wr']:.0f}%WR TP={r.get('avg_tp2',0):.2f}% EV={r['ev2']:+.3f}% | "
-                    f"SL={r.get('avg_sl',0):.2f}%"
+                    f"SL={r.get('avg_sl',0):.2f}% | mSL={r.get('avg_sl_model',0):.2f}% mEV={r.get('ev1_msl',0):+.3f}%"
                 )
 
         # Save best model by TP1 EV score
@@ -671,7 +758,7 @@ def train():
                 score += weight * ev * min(n_t, 200)
         if score > best_score:
             best_score = score
-            torch.save(model.state_dict(), MODEL_FILE)
+            torch.save(model.state_dict(), model_file)
             print(f"  -> Saved best model (TP1 score: {score:.1f})")
 
         if test_loss < best_loss:
@@ -684,8 +771,180 @@ def train():
                 break
 
     # Final evaluation with best model
-    model.load_state_dict(torch.load(MODEL_FILE, weights_only=True))
+    model.load_state_dict(torch.load(model_file, weights_only=True))
     _, results = evaluate(model, test_loaders)
+    return model, best_score, results
+
+
+def train():
+    if WALK_FORWARD:
+        train_walk_forward()
+        return
+
+    if ENSEMBLE_N > 1:
+        train_ensemble()
+        return
+
+    train_loaders, test_loaders, n_features = load_data_set()
+    model, best_score, results = train_one_model(
+        train_loaders, test_loaders, n_features, MODEL_FILE,
+    )
+    _print_final_results(results)
+
+
+def train_walk_forward():
+    """Rolling walk-forward validation: train on expanding window, test on next year."""
+    folds = [
+        {"train_end": "2022-01-01", "test_end": "2023-01-01", "label": "train 2018-2021, test 2022"},
+        {"train_end": "2023-01-01", "test_end": "2024-01-01", "label": "train 2018-2022, test 2023"},
+        {"train_end": "2024-01-01", "test_end": "2025-01-01", "label": "train 2018-2023, test 2024"},
+    ]
+
+    all_fold_results = []
+    for i, fold in enumerate(folds):
+        print(f"\n{'='*60}")
+        print(f"Walk-Forward Fold {i+1}/{len(folds)}: {fold['label']}")
+        print(f"{'='*60}")
+
+        fold_model_file = f"wf_model_fold_{i}.pth"
+        train_loaders, test_loaders, n_features = load_data_set(walk_forward_fold=fold)
+
+        # Check if we have test data
+        total_test = sum(len(loader.dataset) for loader in test_loaders.values())
+        if total_test == 0:
+            print(f"  No test signals for fold {i+1}, skipping")
+            continue
+
+        _, _, results = train_one_model(
+            train_loaders, test_loaders, n_features, fold_model_file,
+        )
+        all_fold_results.append((fold["label"], results))
+
+        # Clean up fold model file
+        if os.path.exists(fold_model_file):
+            os.remove(fold_model_file)
+
+    # Print walk-forward summary
+    print(f"\n{'='*60}")
+    print(f"Walk-Forward Summary")
+    print(f"{'='*60}")
+    for label, results in all_fold_results:
+        r70 = results.get(0.7, {"n": 0, "ev1": 0, "tp1_wr": 0, "wr": 0, "avg_sl": 0})
+        r50 = results.get(0.5, {"n": 0, "ev1": 0, "tp1_wr": 0, "wr": 0, "avg_sl": 0})
+        print(f"  {label}:")
+        print(f"    P>0.5: n={r50['n']} TP1_WR={r50['tp1_wr']:.0f}% EV={r50['ev1']:+.3f}%")
+        print(f"    P>0.7: n={r70['n']} TP1_WR={r70['tp1_wr']:.0f}% EV={r70['ev1']:+.3f}%")
+
+    # Average EV across folds
+    if all_fold_results:
+        for thresh in [0.5, 0.7]:
+            evs = [r.get(thresh, {"ev1": 0})["ev1"] for _, r in all_fold_results]
+            ns = [r.get(thresh, {"n": 0})["n"] for _, r in all_fold_results]
+            avg_ev = np.mean(evs)
+            total_n = sum(ns)
+            print(f"  Average EV at P>{thresh}: {avg_ev:+.3f}% ({total_n} total trades)")
+
+
+def train_ensemble():
+    """Train N models with different seeds, report individual and ensemble-averaged EV."""
+    print(f"\n{'='*60}")
+    print(f"Ensemble Training: {ENSEMBLE_N} models")
+    print(f"{'='*60}")
+
+    train_loaders, test_loaders, n_features = load_data_set()
+
+    models = []
+    for i in range(ENSEMBLE_N):
+        model_file = f"best_model_liq_range_sfp_{i}.pth"
+        model, _, results = train_one_model(
+            train_loaders, test_loaders, n_features, model_file, seed=i,
+        )
+        models.append(model)
+
+        print(f"\n--- Model {i} results ---")
+        _print_final_results(results)
+
+    # Ensemble evaluation: average outputs across all models
+    print(f"\n{'='*60}")
+    print(f"Ensemble Evaluation ({ENSEMBLE_N} models averaged)")
+    print(f"{'='*60}")
+
+    all_cls_prob = []
+    all_tp1_pred = []
+    all_tp2_pred = []
+    all_sl_pred = []
+    all_quality = []
+    all_mfe = []
+    all_sl = []
+
+    with torch.no_grad():
+        for loader in test_loaders.values():
+            for x, direction, q, mfe, sl, ttp, asset_id, tf_id, mae in loader:
+                x = x.to(device)
+                asset_id = asset_id.to(device)
+                tf_id = tf_id.to(device)
+                direction = direction.to(device)
+
+                # Average predictions across all ensemble models
+                outs = []
+                for m in models:
+                    m.eval()
+                    out = m(x, asset_ids=asset_id, tf_ids=tf_id, direction_ids=direction)
+                    outs.append(out)
+                avg_out = torch.stack(outs).mean(dim=0)  # (B, 5)
+
+                # P(win) = mean of sigmoid outputs (not sigmoid of mean logit)
+                cls_probs = torch.stack([torch.sigmoid(o[:, 0]) for o in outs]).mean(dim=0)
+                tp1 = avg_out[:, 1]
+                tp2 = avg_out[:, 2]
+                sl_p = avg_out[:, 4]
+
+                all_cls_prob.append(cls_probs.cpu())
+                all_tp1_pred.append(tp1.cpu())
+                all_tp2_pred.append(tp2.cpu())
+                all_sl_pred.append(sl_p.cpu())
+                all_quality.append(q)
+                all_mfe.append(mfe)
+                all_sl.append(sl)
+
+    cls_prob = torch.cat(all_cls_prob)
+    tp1_pred = torch.cat(all_tp1_pred)
+    tp2_pred = torch.cat(all_tp2_pred)
+    sl_pred_ens = torch.cat(all_sl_pred)
+    quality = torch.cat(all_quality)
+    mfe = torch.cat(all_mfe)
+    sl = torch.cat(all_sl)
+
+    sl_effective = torch.max(sl_pred_ens, sl)
+
+    for thresh in [0.3, 0.4, 0.5, 0.6, 0.7]:
+        take = cls_prob > thresh
+        n_take = take.sum().item()
+        if n_take == 0:
+            continue
+        q_taken = quality[take]
+        wr = (q_taken == 1).float().mean().item() * 100
+        mfe_taken = mfe[take]
+        sl_taken = sl_effective[take]
+        tp1_taken = tp1_pred[take]
+        tp2_taken = tp2_pred[take]
+        tp1_wr = (mfe_taken >= tp1_taken).float().mean().item() * 100
+        tp2_wr = (mfe_taken >= tp2_taken).float().mean().item() * 100
+        avg_tp1 = tp1_taken.mean().item() * 100
+        avg_tp2 = tp2_taken.mean().item() * 100
+        avg_sl_taken = sl_taken.mean().item() * 100
+        ev1 = (tp1_wr / 100) * avg_tp1 - (1 - tp1_wr / 100) * avg_sl_taken
+        ev2 = (tp2_wr / 100) * avg_tp2 - (1 - tp2_wr / 100) * avg_sl_taken
+        print(
+            f"  P > {thresh}: {n_take} trades | "
+            f"Gate WR: {wr:.0f}% | "
+            f"TP1: {tp1_wr:.0f}%WR TP={avg_tp1:.2f}% EV={ev1:+.3f}% | "
+            f"TP2: {tp2_wr:.0f}%WR TP={avg_tp2:.2f}% EV={ev2:+.3f}% | "
+            f"SL={avg_sl_taken:.2f}%"
+        )
+
+
+def _print_final_results(results):
     print(f"\n{'=' * 60}")
     print(f"Best model — MFE regression results")
     print(f"{'=' * 60}")

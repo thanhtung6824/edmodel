@@ -70,7 +70,7 @@ def generate_labels(highs, lows, closes, opens, volumes=None, tf_key="4h"):
     Liq data is computed but NOT used as a filter — stored as features.
 
     Returns:
-        (actions, quality, mfe, sl_labels, ttp_labels, swept_levels, signal_map)
+        (actions, quality, mfe, sl_labels, ttp_labels, swept_levels, signal_map, mae_labels)
         signal_map: dict of bar_idx -> LiqRangeSFPSignal
     """
     n = len(highs)
@@ -472,8 +472,8 @@ def generate_labels(highs, lows, closes, opens, volumes=None, tf_key="4h"):
     print(f"    Range approach: {n_approach} signals")
     print(f"    Total: {n_boundary} signals ({n_long} long, {n_short} short)")
 
-    # --- MFE/SL/TTP labels ---
-    quality, mfe_labels, sl_labels, ttp_labels = compute_range_tp_sl_labels(
+    # --- MFE/SL/TTP/MAE labels ---
+    quality, mfe_labels, sl_labels, ttp_labels, mae_labels = compute_range_tp_sl_labels(
         highs, lows, closes, actions, swept_levels, signal_map, horizon=HORIZON_MAP.get(tf_key, 18),
     )
     total_final = int(np.sum(actions != 0))
@@ -488,4 +488,4 @@ def generate_labels(highs, lows, closes, opens, volumes=None, tf_key="4h"):
     else:
         print(f"  [LiqRangeSFP/{tf_key}] No signals detected")
 
-    return actions, quality, mfe_labels, sl_labels, ttp_labels, swept_levels, signal_map
+    return actions, quality, mfe_labels, sl_labels, ttp_labels, swept_levels, signal_map, mae_labels

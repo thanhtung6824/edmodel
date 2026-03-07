@@ -267,7 +267,7 @@ Computed by resampling current TF data 4:1 to simulate higher-TF context (15m→
 
 **File:** `src/models/liq_range_sfp_model.py`
 
-`LiqRangeSFPClassifier` — 4-head model with direction-conditioned FiLM, positional encoding, and 2-layer transformer (~73K parameters).
+`LiqRangeSFPClassifier` — 5-head model with direction-conditioned FiLM, positional encoding, and 2-layer transformer (~80K parameters).
 
 ```
 Input: (batch, window, 37)
@@ -295,21 +295,23 @@ Three pooling strategies:
   |
 Concat -> (144)
   |
-  +---> cls_head:  Linear(144->48) -> ReLU -> Dropout(0.15) -> Linear(48->1)  ->  logit     -> sigmoid -> P(profitable)
+  +---> cls_head:      Linear(144->48) -> ReLU -> Dropout(0.15) -> Linear(48->1)  ->  logit     -> sigmoid -> P(profitable)
   |
-  +---> tp1_head:  Linear(144->48) -> ReLU -> Dropout(0.15) -> Linear(48->1)  ->  softplus  -> TP1 distance (fixed τ=0.15)
+  +---> tp1_head:      Linear(144->48) -> ReLU -> Dropout(0.15) -> Linear(48->1)  ->  softplus  -> TP1 distance (fixed τ=0.15)
   |
-  +---> tp2_head:  Linear(144->48) -> ReLU -> Dropout(0.15) -> Linear(48->1)  ->  softplus  -> TP2 distance (fixed τ=0.40)
+  +---> tp2_head:      Linear(144->48) -> ReLU -> Dropout(0.15) -> Linear(48->1)  ->  softplus  -> TP2 distance (fixed τ=0.40)
   |
-  +---> ttp_head:  Linear(144->48) -> ReLU -> Dropout(0.15) -> Linear(48->1)  ->  sigmoid  -> time-to-peak ∈ [0, 1]
+  +---> ttp_head:      Linear(144->48) -> ReLU -> Dropout(0.15) -> Linear(48->1)  ->  sigmoid  -> time-to-peak ∈ [0, 1]
   |
-  +--- FiLM conditioning on all 4 heads (scale ∈ [0.7, 1.3], bias ∈ [-0.1, 0.1])
+  +---> sl_pred_head:  Linear(144->48) -> ReLU -> Dropout(0.15) -> Linear(48->1)  ->  softplus  -> SL distance (positive)
+  |
+  +--- FiLM conditioning on all 5 heads (scale ∈ [0.7, 1.3], bias ∈ [-0.1, 0.1])
 ```
 
 ### FiLM Conditioning (Direction-Aware)
 **File:** `src/models/liq_range_sfp_model.py:ConditioningModule`
 
-Applies per-asset/TF/direction scale and bias to all 4 heads:
+Applies per-asset/TF/direction scale and bias to all 5 heads:
 - Asset embedding (dim=8) + TF embedding (dim=4) + Direction embedding (dim=4) → Linear(16→16→8) → constrained scale + bias
 - Direction embedding: 0=none, 1=long, 2=short — allows asymmetric long/short TP targets
 - Scale ∈ [0.7, 1.3] via `0.7 + 0.6 * sigmoid(x)`, bias ∈ [-0.1, 0.1] via `0.1 * tanh(x)`
@@ -325,11 +327,18 @@ Predicts when the MFE peak occurs within the forward horizon:
 - Trained with smooth L1 loss (weight=0.5), only on profitable signals
 - Used by server for TTP-based trailing stop (see Section 10)
 
-**Output (B, 4):**
+### SL Prediction Head (v5)
+Predicts optimal stop-loss distance from MAE (Max Adverse Excursion) data:
+- Trained with quantile loss at τ=0.85 on MAE target (all signals, not just profitable)
+- Output: positive distance via softplus
+- Server uses model SL floored by candle extreme (never tighter than structural SL)
+
+**Output (B, 5):**
 - `[0]` P(profitable) logit — classification gate (apply sigmoid externally)
 - `[1]` TP1 distance — conservative (softplus, fixed quantile τ=0.15)
 - `[2]` TP2 distance — aggressive (softplus, fixed quantile τ=0.40)
 - `[3]` ttp — time-to-peak ∈ [0, 1] (sigmoid)
+- `[4]` SL distance — predicted optimal stop-loss distance (softplus)
 
 **Window sizes** (with learnable positional encoding):
 
@@ -371,8 +380,17 @@ MFE clipped to [0%, 15%].
 ### Time-to-Peak Label
 `ttp = peak_bar / horizon` where `peak_bar` is the bar index at which MFE was achieved. Gives 0.0 for early peaks, 1.0 for peaks at horizon end. Only meaningful for profitable signals.
 
+### MAE (Max Adverse Excursion) (v5)
+The maximum adverse price move before SL is hit or horizon expires:
+
+**Long:** `MAE = max((entry - Low[j]) / entry)` for `j` in `[i+1, i+horizon]`, stopping if `Low[j] <= stop_price`
+
+**Short:** `MAE = max((High[j] - entry) / entry)` for `j` in `[i+1, i+horizon]`, stopping if `High[j] >= stop_price`
+
+MAE clipped to [0%, 15%]. Used to train the SL regression head.
+
 ### Returns
-`(quality, mfe_labels, sl_labels, ttp_labels)` — 4 arrays
+`(quality, mfe_labels, sl_labels, ttp_labels, mae_labels)` — 5 arrays
 
 ---
 
@@ -387,10 +405,10 @@ MFE clipped to [0%, 15%].
 - **Scaler**: `StandardScaler` fit on all training data combined
 
 ### Loss Function
-Combined classification + regression + time-to-peak:
+Combined classification + regression + time-to-peak + SL:
 
 ```
-loss = cls_loss + reg_loss + 0.5 * ttp_loss
+loss = cls_loss + reg_loss + 0.5 * ttp_loss + 0.2 * sl_loss
 ```
 
 **Classification (gate):**
@@ -406,6 +424,11 @@ loss = cls_loss + reg_loss + 0.5 * ttp_loss
 - Smooth L1 loss on ttp target (peak_bar / horizon)
 - Weight: 0.5
 - **Only computed for profitable signals** (quality=1)
+
+**SL Regression (v5):**
+- Quantile loss at τ=0.85 on MAE target (max adverse excursion)
+- Weight: 0.2 (low weight to avoid interfering with TP heads)
+- **Computed on ALL signals** (not just profitable) — learns adverse excursion for all setups
 
 ### Optimizer
 - AdamW (lr=1e-3, weight_decay=1e-3)
@@ -428,14 +451,22 @@ Per scheduled job (each asset x TF):
 2. Recompute indicators (OBV, BB, EMA21, RSI)
 3. Run `run_liq_range_sfp_detection()` -> signals with boundary filter
 4. Build features (37) -> scale with saved `StandardScaler`
-5. For each signal bar: `predict_bar(model, scaled, bar_idx, tf_key, asset_id)` -> `(P(win), tp1_dist, tp2_dist, ttp)`
-6. If `P(win) >= 0.3`: emit signal with entry, model-predicted TP levels, and ttp
+5. For each signal bar: `predict_bar(model, scaled, bar_idx, tf_key, asset_id)` -> `(P(win), tp1_dist, tp2_dist, ttp, sl_dist)`
+6. If `P(win) >= 0.3`: emit signal with entry, model-predicted TP/SL levels, and ttp
+
+### Ensemble Inference (v5)
+If multiple ensemble model files exist (`best_model_liq_range_sfp_*.pth`), the server loads all of them:
+- `P(win)` = mean of sigmoid outputs (not sigmoid of mean logit)
+- `TP1/TP2/TTP/SL` = mean of regression outputs
+- Falls back to single model if no ensemble files found
 
 ### Signal Structure
 - **Entry**: swept swing level
 - **TP1**: `entry * (1 ± tp1_dist)` — conservative target from model regression
 - **TP2**: `entry * (1 ± tp2_dist)` — aggressive target from model regression
-- **SL**: SFP candle extreme (Low for longs, High for shorts)
+- **SL**: model-predicted SL distance, floored by candle extreme (never tighter than structural)
+  - Long: `sl_price = min(candle_low, entry * (1 - sl_dist))`
+  - Short: `sl_price = max(candle_high, entry * (1 + sl_dist))`
 - **Best TP**: TP2 if its R:R exceeds TP1's by 1.5x, else TP1
 - **TTP**: predicted time-to-peak ∈ [0, 1] (fraction of forward horizon)
 - **Expiry**: 3 bars
@@ -527,7 +558,15 @@ P > 0.7:  5311 trades | TP1 EV=+0.758%
 
 ## Implemented Improvements
 
-### v4 (current)
+### v5 (current)
+4 improvements targeting SL prediction, validation robustness, and inference reliability:
+
+1. ~~**SL regression head**~~ — **Done.** 5th model output predicts optimal SL distance from MAE data. Trained with quantile loss at τ=0.85 on all signals. Server uses model SL floored by candle extreme.
+2. ~~**Feature importance audit**~~ — **Done.** `src/feature_importance.py` performs permutation importance: shuffles each of 37 features, measures TP1 EV degradation. Identifies dead-weight features for removal.
+3. ~~**Walk-forward validation**~~ — **Done.** `--walk-forward` flag: train 2018-2021→test 2022, train 2018-2022→test 2023, train 2018-2023→test 2024. Reports per-fold and averaged EV.
+4. ~~**Ensemble training**~~ — **Done.** `--ensemble N` flag: trains N models with different seeds, saves as `best_model_liq_range_sfp_0.pth`, etc. Server auto-detects ensemble files and averages predictions (P(win) = mean of sigmoids, TP/SL = mean of regressions).
+
+### v4
 3 improvements targeting model capacity and 15m performance:
 
 1. ~~**Per-TF horizon**~~ — **Done.** 15m horizon increased 18→36 bars (9 hours) to give moves more room to develop. 1h/4h keep 18 bars.
@@ -553,8 +592,10 @@ P > 0.7:  5311 trades | TP1 EV=+0.758%
 
 ## Potential Next Improvements
 
-1. **Ensemble/stacking** — train multiple models with different random seeds, use consensus voting for the gate and average for TP regression. Would reduce variance at the cost of inference speed.
+1. **Attention-based feature selection** — replace fixed 37-feature set with learnable feature attention weights. Let the model learn which features matter per-signal rather than treating all equally.
 
-2. **Online learning** — periodically fine-tune on recent signals with known outcomes to adapt to regime changes. Would need careful implementation to prevent catastrophic forgetting.
+2. **Multi-task curriculum learning** — start training with only classification loss, gradually introduce regression and SL losses. May help the model learn a better representation before splitting into task-specific heads.
 
-3. **Order book features** — if available, add spread, depth imbalance, and trade flow metrics at signal time. Would require live data integration but could significantly improve gate accuracy.
+3. **Asymmetric SL by direction** — currently SL prediction treats long/short symmetrically. Long drawdowns and short squeezes have different dynamics. Consider direction-specific MAE targets or separate SL tau values.
+
+4. **Online adaptation** — periodically fine-tune the model on recent live signals to adapt to changing market regimes. Risk: overfitting to recent noise. Mitigation: use walk-forward validation to set the fine-tuning window size.

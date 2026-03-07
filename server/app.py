@@ -14,6 +14,7 @@ from fastapi.responses import HTMLResponse
 from server.binance import fetch_candles
 from server.config import (
     ASSETS,
+    ENSEMBLE_MODEL_PATTERN,
     HISTORY_FILES,
     HORIZON_BY_TF,
     LIVE_SIGNALS_PATH,
@@ -28,7 +29,7 @@ from server.config import (
     WINDOW,
     WINDOW_BY_TF,
 )
-from server.inference import load_model, load_scaler, predict_bar
+from server.inference import load_ensemble, load_model, load_scaler, predict_bar, predict_bar_ensemble
 from server.pipeline import (
     build_liq_range_sfp_features,
     run_liq_range_sfp_detection,
@@ -47,6 +48,7 @@ active_signals: list[dict] = []  # signals with bars_remaining > 0
 live_signals: list[dict] = []  # all live signals (persisted to JSON)
 candle_store: dict[str, list[dict]] = {}  # tf_key -> [{time, open, high, low, close}, ...]
 model = None
+ensemble_models: list = []  # ensemble of models (if available)
 scaler = None
 scheduler = AsyncIOScheduler(timezone=timezone.utc)
 last_run: dict[str, str] = {}
@@ -297,13 +299,16 @@ async def run_job(asset_key: str, tf_key: str):
                 if bar_idx not in map_shifted:
                     continue
 
-                result = predict_bar(model, scaled, bar_idx, tf_key=tf_key, asset_id=asset_id, direction=action)
+                if ensemble_models:
+                    result = predict_bar_ensemble(ensemble_models, scaled, bar_idx, tf_key=tf_key, asset_id=asset_id, direction=action)
+                else:
+                    result = predict_bar(model, scaled, bar_idx, tf_key=tf_key, asset_id=asset_id, direction=action)
                 direction = "LONG" if action == 1 else "SHORT"
                 bars_ago = n_trimmed - 1 - bar_idx
                 n_scored += 1
                 if result is None:
                     continue
-                p_win, tp1_dist, tp2_dist, ttp = result
+                p_win, tp1_dist, tp2_dist, ttp, sl_dist = result
                 # Gate on P(profitable)
                 if p_win < MODEL_CONFIDENCE:
                     logger.debug(f"[{job_key}] SKIP {direction} bar -{bars_ago}: P(win)={p_win:.3f} < {MODEL_CONFIDENCE}")
@@ -318,14 +323,21 @@ async def run_job(asset_key: str, tf_key: str):
                 entry = float(swept_levels[orig_idx])
 
                 # Model-predicted TP prices from regression heads
+                # Model-predicted SL: use sl_dist, floored by candle extreme (never tighter)
                 if is_long:
                     tp1_price = entry * (1 + tp1_dist)
                     tp2_price = entry * (1 + tp2_dist)
-                    sl_price = float(df["Low"].values[orig_idx])
+                    candle_sl = float(df["Low"].values[orig_idx])
+                    model_sl = entry * (1 - sl_dist)
+                    # Floor: never tighter than candle extreme
+                    sl_price = min(candle_sl, model_sl)
                 else:
                     tp1_price = entry * (1 - tp1_dist)
                     tp2_price = entry * (1 - tp2_dist)
-                    sl_price = float(df["High"].values[orig_idx])
+                    candle_sl = float(df["High"].values[orig_idx])
+                    model_sl = entry * (1 + sl_dist)
+                    # Floor: never tighter than candle extreme
+                    sl_price = max(candle_sl, model_sl)
 
                 tp1_pct = tp1_dist * 100
                 tp2_pct = tp2_dist * 100
@@ -421,11 +433,16 @@ def _expire_active_signals(job_key: str, current_bar_time: int):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Load model on startup, start scheduler, run all jobs once."""
-    global model, scaler
+    global model, ensemble_models, scaler
 
     _load_live_signals()
 
-    if Path(MODEL_PATH).exists():
+    # Try loading ensemble first, fall back to single model
+    ensemble_models = load_ensemble(ENSEMBLE_MODEL_PATTERN)
+    if ensemble_models:
+        logger.info("Loaded %d ensemble models matching %s", len(ensemble_models), ENSEMBLE_MODEL_PATTERN)
+        model = ensemble_models[0]  # keep single model reference for compatibility
+    elif Path(MODEL_PATH).exists():
         logger.info("Loading Liq+Range+SFP model from %s", MODEL_PATH)
         model = load_model(MODEL_PATH)
         logger.info("Model loaded")

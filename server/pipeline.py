@@ -102,7 +102,7 @@ def run_liq_range_sfp_detection(df: pd.DataFrame, tf_key: str):
     opens = df["Open"].values
     volumes = df["Volume"].values if "Volume" in df.columns else None
 
-    actions, _quality, _mfe, _sl, _ttp, swept_levels, signal_map = generate_labels(
+    actions, _quality, _mfe, _sl, _ttp, swept_levels, signal_map, _mae = generate_labels(
         highs, lows, closes, opens,
         volumes=volumes,
         tf_key=tf_key,

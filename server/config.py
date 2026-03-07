@@ -29,6 +29,7 @@ MODEL_PATH = "best_model_liq_range_sfp.pth"
 SCALER_PATH = "liq_range_sfp_scaler.joblib"
 MODEL_CONFIDENCE = 0.3  # P(win) threshold
 N_FEATURES = 37
+ENSEMBLE_MODEL_PATTERN = "best_model_liq_range_sfp_*.pth"
 
 LIVE_SIGNALS_PATH = "signals_live.json"
 

@@ -1,18 +1,20 @@
 """Model loading and inference for Liq+Range+SFP model.
 
-Model outputs (B, 4):
+Model outputs (B, 5):
   [0]: P(profitable) logit — classification gate
   [1]: TP1 distance (softplus, fixed quantile)
   [2]: TP2 distance (softplus, fixed quantile)
   [3]: ttp — time-to-peak ∈ [0, 1]
+  [4]: SL distance — predicted optimal stop-loss distance (softplus)
 """
 
+import glob as glob_module
 import joblib
 import torch
 from sklearn.preprocessing import StandardScaler
 
 from src.models.liq_range_sfp_model import LiqRangeSFPClassifier
-from server.config import WINDOW, WINDOW_BY_TF, N_FEATURES, HIDDEN_DIM
+from server.config import WINDOW, WINDOW_BY_TF, N_FEATURES, HIDDEN_DIM, ENSEMBLE_MODEL_PATTERN
 
 # Asset/TF ID maps (must match training)
 ASSET_ID_MAP = {1.0: 0, 2.0: 1, 3.0: 2, 4.0: 3, 5.0: 4}
@@ -33,6 +35,23 @@ def load_model(path: str) -> LiqRangeSFPClassifier:
     return model
 
 
+def load_ensemble(pattern: str = None) -> list[LiqRangeSFPClassifier]:
+    """Load all matching ensemble model files.
+
+    Returns list of models. If no ensemble files found, returns empty list.
+    """
+    if pattern is None:
+        pattern = ENSEMBLE_MODEL_PATTERN
+    files = sorted(glob_module.glob(pattern))
+    models = []
+    for f in files:
+        model = LiqRangeSFPClassifier(n_features=N_FEATURES, window=WINDOW, hidden=HIDDEN_DIM)
+        model.load_state_dict(torch.load(f, map_location="cpu", weights_only=True))
+        model.eval()
+        models.append(model)
+    return models
+
+
 def predict_bar(
     model: LiqRangeSFPClassifier,
     scaled_features,
@@ -40,13 +59,13 @@ def predict_bar(
     tf_key: str = "4h",
     asset_id: float = 1.0,
     direction: int = 0,
-) -> tuple[float, float, float, float] | None:
+) -> tuple[float, float, float, float, float] | None:
     """Run model on a specific bar.
 
     Args:
         direction: 1 for LONG, 2 for SHORT, 0 for unknown.
 
-    Returns (P(profitable), tp1_dist, tp2_dist, ttp), or None if not enough data.
+    Returns (P(profitable), tp1_dist, tp2_dist, ttp, sl_dist), or None if not enough data.
     """
     window = WINDOW_BY_TF.get(tf_key, WINDOW)
     if bar_idx < window - 1 or bar_idx >= len(scaled_features):
@@ -61,11 +80,62 @@ def predict_bar(
     d_id = torch.LongTensor([DIRECTION_MAP.get(direction, 0)])
 
     with torch.no_grad():
-        out = model(x_t, asset_ids=a_id, tf_ids=t_id, direction_ids=d_id)  # (1, 4)
+        out = model(x_t, asset_ids=a_id, tf_ids=t_id, direction_ids=d_id)  # (1, 5)
 
-    out = out.squeeze(0)  # (4,)
+    out = out.squeeze(0)  # (5,)
     p_win = torch.sigmoid(out[0]).item()
     tp1_dist = out[1].item()
     tp2_dist = out[2].item()
     ttp = out[3].item()
-    return (p_win, tp1_dist, tp2_dist, ttp)
+    sl_dist = out[4].item()
+    return (p_win, tp1_dist, tp2_dist, ttp, sl_dist)
+
+
+def predict_bar_ensemble(
+    models: list[LiqRangeSFPClassifier],
+    scaled_features,
+    bar_idx: int,
+    tf_key: str = "4h",
+    asset_id: float = 1.0,
+    direction: int = 0,
+) -> tuple[float, float, float, float, float] | None:
+    """Run ensemble of models on a specific bar, average predictions.
+
+    Returns (P(profitable), tp1_dist, tp2_dist, ttp, sl_dist), or None if not enough data.
+    P(win) = mean of sigmoid outputs (not sigmoid of mean logit).
+    TP1/TP2/TTP/SL = mean of regression outputs.
+    """
+    window = WINDOW_BY_TF.get(tf_key, WINDOW)
+    if bar_idx < window - 1 or bar_idx >= len(scaled_features):
+        return None
+
+    x = scaled_features[bar_idx - window + 1: bar_idx + 1]
+    x_t = torch.FloatTensor(x).unsqueeze(0)
+
+    a_id = torch.LongTensor([ASSET_ID_MAP.get(asset_id, 0)])
+    t_id = torch.LongTensor([TF_ID_MAP.get(tf_key, 0)])
+    d_id = torch.LongTensor([DIRECTION_MAP.get(direction, 0)])
+
+    p_wins = []
+    tp1s = []
+    tp2s = []
+    ttps = []
+    sl_dists = []
+
+    with torch.no_grad():
+        for model in models:
+            out = model(x_t, asset_ids=a_id, tf_ids=t_id, direction_ids=d_id).squeeze(0)
+            p_wins.append(torch.sigmoid(out[0]).item())
+            tp1s.append(out[1].item())
+            tp2s.append(out[2].item())
+            ttps.append(out[3].item())
+            sl_dists.append(out[4].item())
+
+    n = len(models)
+    return (
+        sum(p_wins) / n,
+        sum(tp1s) / n,
+        sum(tp2s) / n,
+        sum(ttps) / n,
+        sum(sl_dists) / n,
+    )

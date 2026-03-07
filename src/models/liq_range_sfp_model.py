@@ -1,13 +1,14 @@
-"""Liq+Range+SFP model: 1 classification gate + 2 regression heads +
-1 time-to-peak head + direction-conditioned FiLM + positional encoding.
+"""Liq+Range+SFP model: 1 classification gate + 2 TP regression heads +
+1 time-to-peak head + 1 SL regression head + direction-conditioned FiLM + positional encoding.
 
-Outputs (B, 4):
+Outputs (B, 5):
   [0]: P(profitable) logit — classification gate (apply sigmoid externally)
   [1]: TP1 distance — conservative (softplus, fixed quantile)
   [2]: TP2 distance — aggressive (softplus, fixed quantile)
   [3]: ttp — time-to-peak ∈ [0, 1] (sigmoid)
+  [4]: SL distance — predicted optimal stop-loss distance (softplus, positive)
 
-33 features, FiLM conditioning on asset/TF/direction embeddings.
+37 features, FiLM conditioning on asset/TF/direction embeddings.
 """
 
 import torch
@@ -88,8 +89,12 @@ class LiqRangeSFPClassifier(nn.Module):
         self.ttp_head = nn.Sequential(
             nn.Linear(hidden * 3, hidden), nn.ReLU(), nn.Dropout(0.15), nn.Linear(hidden, 1),
         )
-        # FiLM conditioning on cls/tp1/tp2/ttp (4 heads)
-        self.conditioning = ConditioningModule(n_assets=6, n_tfs=4, n_heads=4)
+        # SL prediction head: predicted optimal SL distance (softplus ensures positive)
+        self.sl_pred_head = nn.Sequential(
+            nn.Linear(hidden * 3, hidden), nn.ReLU(), nn.Dropout(0.15), nn.Linear(hidden, 1),
+        )
+        # FiLM conditioning on cls/tp1/tp2/ttp/sl (5 heads)
+        self.conditioning = ConditioningModule(n_assets=6, n_tfs=4, n_heads=5)
 
     def forward(self, x, asset_ids=None, tf_ids=None, direction_ids=None):
         # x: (B, window, n_features)
@@ -114,13 +119,15 @@ class LiqRangeSFPClassifier(nn.Module):
         tp1 = F.softplus(self.tp1_head(combined))    # (B, 1) — positive
         tp2 = F.softplus(self.tp2_head(combined))    # (B, 1) — positive
         ttp = torch.sigmoid(self.ttp_head(combined))  # (B, 1) ∈ [0, 1]
+        sl_pred = F.softplus(self.sl_pred_head(combined.detach()))  # (B, 1) — positive SL distance, detached from backbone
 
-        # Apply FiLM to all 4 heads
+        # Apply FiLM to all 5 heads
         if asset_ids is not None and tf_ids is not None:
-            scale, bias = self.conditioning(asset_ids, tf_ids, direction_ids)  # (B, 4), (B, 4)
+            scale, bias = self.conditioning(asset_ids, tf_ids, direction_ids)  # (B, 5), (B, 5)
             cls_logit = cls_logit * scale[:, 0:1] + bias[:, 0:1]
             tp1 = tp1 * scale[:, 1:2] + bias[:, 1:2]
             tp2 = tp2 * scale[:, 2:3] + bias[:, 2:3]
             ttp = ttp * scale[:, 3:4] + bias[:, 3:4]
+            sl_pred = sl_pred * scale[:, 4:5] + bias[:, 4:5]
 
-        return torch.cat([cls_logit, tp1, tp2, ttp], dim=-1)  # (B, 4)
+        return torch.cat([cls_logit, tp1, tp2, ttp, sl_pred], dim=-1)  # (B, 5)
