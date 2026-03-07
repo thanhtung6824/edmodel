@@ -74,65 +74,134 @@ def _save_live_signals():
 
 
 def _resolve_open_signals(job_key: str, candles: list[dict]):
-    """Check open live signals against candle data to determine win/loss."""
+    """Check open/partial live signals against candle data to determine outcomes.
+
+    Partial TP execution flow:
+      open → TP1 hit → partial (SL moves to breakeven)
+        → TP2 hit → win (0.5*TP1_R + 0.5*TP2_R)
+        → stopped at BE → partial_win (0.5*TP1_R)
+    """
     changed = False
     for sig in live_signals:
         sig_key = f"{sig.get('asset', 'btc')}_{sig['timeframe']}"
-        if sig_key != job_key or sig["status"] != "open":
+        if sig_key != job_key:
+            continue
+        if sig["status"] not in ("open", "partial"):
             continue
 
         entry = sig["entry"]
-        tp_price = sig["tp_price"]
+        tp1_price = sig.get("tp1_price", sig["tp_price"])
+        tp2_price = sig.get("tp2_price", sig["tp_price"])
         sl_price = sig["sl_price"]
         sig_time = sig["time"]
         is_long = sig["direction"] == "LONG"
 
-        # Count bars after signal and check TP/SL hit
-        bars_after = 0
-        for c in candles:
-            if c["time"] <= sig_time:
-                continue
-            bars_after += 1
+        if sig["status"] == "open":
+            # Phase 1: Check for TP1 hit or SL hit
+            bars_after = 0
+            for c in candles:
+                if c["time"] <= sig_time:
+                    continue
+                bars_after += 1
 
-            if is_long:
-                if c["high"] >= tp_price:
-                    sig["status"] = "win"
-                    sig["actual_r"] = round((tp_price - entry) / (entry - sl_price + 1e-8), 2)
-                    sig["resolved_at"] = c["time"]
-                    changed = True
-                    break
-                if c["low"] <= sl_price:
-                    sig["status"] = "loss"
-                    sig["actual_r"] = -1.0
-                    sig["resolved_at"] = c["time"]
-                    changed = True
-                    break
-            else:
-                if c["low"] <= tp_price:
-                    sig["status"] = "win"
-                    sig["actual_r"] = round((entry - tp_price) / (sl_price - entry + 1e-8), 2)
-                    sig["resolved_at"] = c["time"]
-                    changed = True
-                    break
-                if c["high"] >= sl_price:
-                    sig["status"] = "loss"
-                    sig["actual_r"] = -1.0
-                    sig["resolved_at"] = c["time"]
-                    changed = True
-                    break
-
-            if bars_after >= SIGNAL_HORIZON:
-                # Expired without hitting TP or SL — mark by close P&L
-                last_close = c["close"]
                 if is_long:
-                    pnl = (last_close - entry) / (entry - sl_price + 1e-8)
+                    # Check TP1 first (partial fill)
+                    if c["high"] >= tp1_price:
+                        sig["status"] = "partial"
+                        sig["partial_time"] = c["time"]
+                        # Move SL to breakeven
+                        sig["sl_price_original"] = sl_price
+                        sig["sl_price"] = entry
+                        changed = True
+                        break
+                    if c["low"] <= sl_price:
+                        sig["status"] = "loss"
+                        sig["actual_r"] = -1.0
+                        sig["resolved_at"] = c["time"]
+                        changed = True
+                        break
                 else:
-                    pnl = (entry - last_close) / (sl_price - entry + 1e-8)
-                sig["status"] = "win" if pnl > 0 else "loss"
-                sig["actual_r"] = round(pnl, 2)
-                sig["resolved_at"] = c["time"]
-                changed = True
-                break
+                    if c["low"] <= tp1_price:
+                        sig["status"] = "partial"
+                        sig["partial_time"] = c["time"]
+                        sig["sl_price_original"] = sl_price
+                        sig["sl_price"] = entry
+                        changed = True
+                        break
+                    if c["high"] >= sl_price:
+                        sig["status"] = "loss"
+                        sig["actual_r"] = -1.0
+                        sig["resolved_at"] = c["time"]
+                        changed = True
+                        break
+
+                if bars_after >= SIGNAL_HORIZON:
+                    last_close = c["close"]
+                    if is_long:
+                        pnl = (last_close - entry) / (entry - sl_price + 1e-8)
+                    else:
+                        pnl = (entry - last_close) / (sl_price - entry + 1e-8)
+                    sig["status"] = "win" if pnl > 0 else "loss"
+                    sig["actual_r"] = round(pnl, 2)
+                    sig["resolved_at"] = c["time"]
+                    changed = True
+                    break
+
+        if sig["status"] == "partial":
+            # Phase 2: TP1 already hit, trailing with BE stop. Check TP2 or BE stop.
+            partial_time = sig.get("partial_time", sig_time)
+            sl_original = sig.get("sl_price_original", sl_price)
+            tp1_r = abs(tp1_price - entry) / (abs(entry - sl_original) + 1e-8)
+            bars_after = 0
+
+            for c in candles:
+                if c["time"] <= partial_time:
+                    continue
+                bars_after += 1
+
+                if is_long:
+                    if c["high"] >= tp2_price:
+                        # Full TP2 hit: 0.5 * TP1_R + 0.5 * TP2_R
+                        tp2_r = (tp2_price - entry) / (entry - sl_original + 1e-8)
+                        sig["status"] = "win"
+                        sig["actual_r"] = round(0.5 * tp1_r + 0.5 * tp2_r, 2)
+                        sig["resolved_at"] = c["time"]
+                        changed = True
+                        break
+                    if c["low"] <= entry:
+                        # Stopped at breakeven: 0.5 * TP1_R
+                        sig["status"] = "partial_win"
+                        sig["actual_r"] = round(0.5 * tp1_r, 2)
+                        sig["resolved_at"] = c["time"]
+                        changed = True
+                        break
+                else:
+                    if c["low"] <= tp2_price:
+                        tp2_r = (entry - tp2_price) / (sl_original - entry + 1e-8)
+                        sig["status"] = "win"
+                        sig["actual_r"] = round(0.5 * tp1_r + 0.5 * tp2_r, 2)
+                        sig["resolved_at"] = c["time"]
+                        changed = True
+                        break
+                    if c["high"] >= entry:
+                        sig["status"] = "partial_win"
+                        sig["actual_r"] = round(0.5 * tp1_r, 2)
+                        sig["resolved_at"] = c["time"]
+                        changed = True
+                        break
+
+                if bars_after >= SIGNAL_HORIZON:
+                    # Expired after partial — close at market, count partial TP1 + remaining P&L
+                    last_close = c["close"]
+                    if is_long:
+                        remaining_r = (last_close - entry) / (entry - sl_original + 1e-8)
+                    else:
+                        remaining_r = (entry - last_close) / (sl_original - entry + 1e-8)
+                    sig["status"] = "partial_win" if remaining_r >= 0 else "partial_win"
+                    sig["actual_r"] = round(0.5 * tp1_r + 0.5 * max(remaining_r, 0), 2)
+                    sig["resolved_at"] = c["time"]
+                    changed = True
+                    break
 
     if changed:
         _save_live_signals()
@@ -214,13 +283,13 @@ async def run_job(asset_key: str, tf_key: str):
                 if bar_idx not in map_shifted:
                     continue
 
-                result = predict_bar(model, scaled, bar_idx, tf_key=tf_key)
+                result = predict_bar(model, scaled, bar_idx, tf_key=tf_key, asset_id=asset_id)
                 direction = "LONG" if action == 1 else "SHORT"
                 bars_ago = n_trimmed - 1 - bar_idx
                 n_scored += 1
                 if result is None:
                     continue
-                p_win, tp1_dist, tp2_dist = result
+                p_win, tp1_dist, tp2_dist, ttp = result
                 # Gate on P(profitable)
                 if p_win < MODEL_CONFIDENCE:
                     logger.debug(f"[{job_key}] SKIP {direction} bar -{bars_ago}: P(win)={p_win:.3f} < {MODEL_CONFIDENCE}")
@@ -282,6 +351,7 @@ async def run_job(asset_key: str, tf_key: str):
                     "ratio": round(ratio, 4),
                     "confidence": round(p_win, 3),
                     "best_tp": best_label,
+                    "ttp": round(ttp, 3),
                     "bars_remaining": remaining,
                     "status": "open",
                     "actual_r": None,
@@ -392,10 +462,10 @@ async def get_signals():
 @app.get("/signals/live")
 async def get_live_signals():
     """Return all live signals with outcomes and stats."""
-    resolved = [s for s in live_signals if s["status"] != "open"]
-    wins = [s for s in resolved if s["status"] == "win"]
+    resolved = [s for s in live_signals if s["status"] not in ("open", "partial")]
+    wins = [s for s in resolved if s["status"] in ("win", "partial_win")]
     losses = [s for s in resolved if s["status"] == "loss"]
-    open_count = sum(1 for s in live_signals if s["status"] == "open")
+    open_count = sum(1 for s in live_signals if s["status"] in ("open", "partial"))
     total_r = sum(s["actual_r"] for s in resolved if s["actual_r"] is not None)
 
     return {
@@ -440,8 +510,8 @@ async def health():
         next_run = job.next_run_time.isoformat() if job.next_run_time else None
         jobs.append({"id": job.id, "name": job.name, "next_run": next_run})
 
-    resolved = [s for s in live_signals if s["status"] != "open"]
-    wins = sum(1 for s in resolved if s["status"] == "win")
+    resolved = [s for s in live_signals if s["status"] not in ("open", "partial")]
+    wins = sum(1 for s in resolved if s["status"] in ("win", "partial_win"))
 
     return {
         "status": "ok",

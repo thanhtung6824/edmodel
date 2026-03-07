@@ -23,7 +23,7 @@ print(f"Using {device} device")
 
 from server.config import WINDOW_BY_TF
 
-N_FEATURES = 24
+N_FEATURES = 33
 MODEL_FILE = "best_model_liq_range_sfp.pth"
 
 
@@ -110,7 +110,7 @@ def run_pipeline(df, tf_key="4h", tf_hours=4.0):
     opens = df["Open"].values
     volumes = df["Volume"].values
 
-    actions, quality, tp_labels, sl_labels, swept_levels, signal_map = generate_labels(
+    actions, quality, tp_labels, sl_labels, ttp_labels, swept_levels, signal_map = generate_labels(
         highs, lows, closes, opens, volumes=volumes, tf_key=tf_key,
     )
 
@@ -238,8 +238,10 @@ def run_pipeline(df, tf_key="4h", tf_hours=4.0):
     return feat.values.astype(np.float32), actions, quality, tp_labels, sl_labels, swept_levels, timestamps, signal_map_shifted
 
 
-def predict_signals(feat_values, actions, model, recent_start_idx=0, tf_key="4h"):
+def predict_signals(feat_values, actions, model, recent_start_idx=0, tf_key="4h", asset_id=1.0):
     """Run model on signal bars in recent portion only."""
+    ASSET_ID_MAP = {1.0: 0, 2.0: 1, 3.0: 2, 4.0: 3, 5.0: 4}
+    TF_ID_MAP = {"15m": 0, "1h": 1, "4h": 2}
     window = WINDOW_BY_TF.get(tf_key, 30)
     scaler = StandardScaler()
     scaled = scaler.fit_transform(feat_values)
@@ -260,8 +262,11 @@ def predict_signals(feat_values, actions, model, recent_start_idx=0, tf_key="4h"
             batch_idx = signal_indices[start:start + batch_size]
             batch_x = np.stack([scaled[i - window + 1:i + 1] for i in batch_idx])
             x_t = torch.FloatTensor(batch_x).to(device)
-            logit = model(x_t)
-            probs = torch.sigmoid(logit)
+            bs = x_t.shape[0]
+            a_ids = torch.LongTensor([ASSET_ID_MAP.get(asset_id, 0)] * bs).to(device)
+            t_ids = torch.LongTensor([TF_ID_MAP.get(tf_key, 0)] * bs).to(device)
+            out = model(x_t, asset_ids=a_ids, tf_ids=t_ids)  # (B, 6)
+            probs = torch.sigmoid(out[:, 0])  # classification gate
             all_probs.extend(probs.cpu().numpy().tolist())
 
     return signal_indices, np.array(all_probs)

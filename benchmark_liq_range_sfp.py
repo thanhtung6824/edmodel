@@ -30,7 +30,7 @@ WINDOW_BY_TF = {"15m": 120, "1h": 48, "4h": 30}
 HORIZON = 18
 MODEL_FILE = "best_model_liq_range_sfp.pth"
 SCALER_FILE = "liq_range_sfp_scaler.joblib"
-N_FEATURES = 30
+N_FEATURES = 33
 THRESHOLDS = [0.3, 0.4, 0.5, 0.6, 0.7]
 
 ASSETS = {
@@ -62,14 +62,19 @@ def load_model():
     return model
 
 
-def predict_signals(model, feat_values, actions, signal_map_shifted, tf_key="4h"):
+def predict_signals(model, feat_values, actions, signal_map_shifted, tf_key="4h", asset_id=1.0):
     """Run model on all signal bars, return per-bar predictions.
 
     Returns dict of bar_idx -> (p_win, tp1_dist, tp2_dist).
     """
+    ASSET_ID_MAP = {1.0: 0, 2.0: 1, 3.0: 2, 4.0: 3, 5.0: 4}
+    TF_ID_MAP = {"15m": 0, "1h": 1, "4h": 2}
     window = WINDOW_BY_TF.get(tf_key, 30)
     scaler = joblib.load(SCALER_FILE)
     scaled = scaler.transform(feat_values)
+
+    a_id = torch.LongTensor([ASSET_ID_MAP.get(asset_id, 0)])
+    t_id = torch.LongTensor([TF_ID_MAP.get(tf_key, 0)])
 
     preds = {}
     n = len(actions)
@@ -82,7 +87,7 @@ def predict_signals(model, feat_values, actions, signal_map_shifted, tf_key="4h"
         x = scaled[bar_idx - window + 1: bar_idx + 1]
         x_t = torch.FloatTensor(x).unsqueeze(0)
         with torch.no_grad():
-            out = model(x_t).squeeze(0)  # (3,)
+            out = model(x_t, asset_ids=a_id, tf_ids=t_id).squeeze(0)  # (6,)
         p_win = torch.sigmoid(out[0]).item()
         tp1_dist = out[1].item()
         tp2_dist = out[2].item()
@@ -222,7 +227,7 @@ def run_benchmark():
 
             label = f"{asset_name.upper()}/{tf_key}"
 
-            actions, quality, mfe, sl_labels, swept_levels, signal_map = generate_labels(
+            actions, quality, mfe, sl_labels, ttp_labels, swept_levels, signal_map = generate_labels(
                 df["High"].values, df["Low"].values,
                 df["Close"].values, df["Open"].values,
                 volumes=df["Volume"].values if "Volume" in df.columns else None,
@@ -234,7 +239,7 @@ def run_benchmark():
             )
 
             feat_arr = feat.values if hasattr(feat, 'values') else feat
-            preds = predict_signals(model, feat_arr.astype(np.float32), actions_trimmed, signal_map_shifted, tf_key=tf_key)
+            preds = predict_signals(model, feat_arr.astype(np.float32), actions_trimmed, signal_map_shifted, tf_key=tf_key, asset_id=cfg["asset_id"])
 
             result = eval_with_model(
                 actions_trimmed, quality, mfe, sl_labels,

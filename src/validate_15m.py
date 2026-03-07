@@ -22,7 +22,7 @@ HORIZON = 18
 WINDOW_BY_TF = {"15m": 120, "1h": 48, "4h": 30}
 MODEL_FILE = "best_model_liq_range_sfp.pth"
 SCALER_FILE = "liq_range_sfp_scaler.joblib"
-N_FEATURES = 30
+N_FEATURES = 33
 THRESHOLDS = [0.3, 0.4, 0.5, 0.6, 0.7]
 
 
@@ -56,7 +56,7 @@ def resample_1m():
 
 def run_pipeline(df):
     """Run LiqRangeSFP detection and feature engineering."""
-    actions, quality, mfe, sl_labels, swept_levels, signal_map = generate_labels(
+    actions, quality, mfe, sl_labels, ttp_labels, swept_levels, signal_map = generate_labels(
         df["High"].values, df["Low"].values,
         df["Close"].values, df["Open"].values,
         volumes=df["Volume"].values if "Volume" in df.columns else None,
@@ -87,8 +87,12 @@ def run_pipeline(df):
 
 def predict_signals(model, scaler, feat_values, actions, signal_map_shifted):
     """Run model on signal bars, return (p_win, tp1_dist, tp2_dist) per bar."""
+    TF_ID_MAP = {"15m": 0, "1h": 1, "4h": 2}
     window = WINDOW_BY_TF.get(TF_KEY, 30)
     scaled = scaler.transform(feat_values)
+
+    a_id = torch.LongTensor([0]).to(device)  # btc = 0
+    t_id = torch.LongTensor([TF_ID_MAP.get(TF_KEY, 0)]).to(device)
 
     preds = {}
     n = len(actions)
@@ -101,7 +105,7 @@ def predict_signals(model, scaler, feat_values, actions, signal_map_shifted):
                 continue
             x = scaled[bar_idx - window + 1: bar_idx + 1]
             x_t = torch.FloatTensor(x).unsqueeze(0).to(device)
-            out = model(x_t).squeeze(0).cpu()  # (3,)
+            out = model(x_t, asset_ids=a_id, tf_ids=t_id).squeeze(0).cpu()  # (6,)
             p_win = torch.sigmoid(out[0]).item()
             tp1_dist = out[1].item()
             tp2_dist = out[2].item()

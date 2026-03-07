@@ -25,7 +25,7 @@ def run_liq_range_sfp_detection(df: pd.DataFrame, tf_key: str):
     opens = df["Open"].values
     volumes = df["Volume"].values if "Volume" in df.columns else None
 
-    actions, _quality, _mfe, _sl, swept_levels, signal_map = generate_labels(
+    actions, _quality, _mfe, _sl, _ttp, swept_levels, signal_map = generate_labels(
         highs, lows, closes, opens,
         volumes=volumes,
         tf_key=tf_key,
@@ -41,13 +41,14 @@ def build_liq_range_sfp_features(
     tf_hours: float,
     asset_id: float = 1.0,
 ):
-    """Build 30 Liq+Range+SFP features.
+    """Build 33 Liq+Range+SFP features.
 
-    6 range + 6 liquidation + 6 SFP candle + 6 context + 6 range fingerprint.
+    6 range + 6 liquidation + 6 SFP candle + 6 context + 6 range fingerprint
+    + 3 new: direction, vwap_distance, volume_imbalance.
     Mirrors src/train_liq_range_sfp.py:build_features() exactly.
 
     Returns:
-        feat_values: float32 array (N-30, 30)
+        feat_values: float32 array (N-30, 33)
         actions_trimmed: actions with warmup dropped
         signal_map_shifted: signal_map with indices shifted by -30
     """
@@ -189,6 +190,25 @@ def build_liq_range_sfp_features(
     feat["touch_symmetry"] = touch_symmetry_arr
     feat["boundary_rejection_avg"] = boundary_rejection_avg_arr
     feat["range_position"] = range_position_arr
+
+    # --- New features (3) ---
+    # Direction: 1.0 for long, -1.0 for short, 0 for non-signal bars
+    direction_arr = np.zeros(n, dtype=np.float32)
+    for i, sig in signal_map.items():
+        direction_arr[i] = 1.0 if sig.direction == 1 else -1.0
+    feat["direction_feat"] = direction_arr
+
+    # VWAP distance: (close - VWAP_20) / close
+    vwap_20 = (df["Close"] * volumes).rolling(20, min_periods=1).sum() / pd.Series(volumes).rolling(20, min_periods=1).sum()
+    vwap_dist = ((closes - vwap_20.values) / (closes + 1e-8)).astype(np.float32)
+    feat["vwap_distance"] = np.clip(vwap_dist, -0.05, 0.05)
+
+    # Volume imbalance: up_vol / total_vol - 0.5 (rolling 10 bars)
+    up_vol = np.where(closes >= opens, volumes, 0.0)
+    up_vol_10 = pd.Series(up_vol).rolling(10, min_periods=1).sum().values
+    total_vol_10 = pd.Series(volumes).rolling(10, min_periods=1).sum().values
+    vol_imbalance = (up_vol_10 / (total_vol_10 + 1e-8) - 0.5).astype(np.float32)
+    feat["volume_imbalance"] = np.clip(vol_imbalance, -0.5, 0.5)
 
     # Drop warmup
     drop_n = 30

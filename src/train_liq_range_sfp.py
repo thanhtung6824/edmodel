@@ -59,13 +59,14 @@ WINDOW_BY_TF = {"15m": 120, "1h": 48, "4h": 30}
 TRAIN_START = "2018-01-01"
 print(f"Training on: {TIMEFRAMES} | Assets: {SELECTED_ASSETS} | Start: {TRAIN_START} | Model: {MODEL_FILE}")
 
-N_FEATURES = 30
+N_FEATURES = 33
 
 
 def build_features(df, actions, signal_map, tf_hours, asset_id=1.0):
-    """Build 30 Liq+Range+SFP features.
+    """Build 33 Liq+Range+SFP features.
 
-    6 range + 6 liquidation + 6 SFP candle + 6 context + 6 range fingerprint.
+    6 range + 6 liquidation + 6 SFP candle + 6 context + 6 range fingerprint
+    + 3 new: direction, vwap_distance, volume_imbalance.
     """
     n = len(df)
     highs = df["High"].values
@@ -208,6 +209,25 @@ def build_features(df, actions, signal_map, tf_hours, asset_id=1.0):
     feat["boundary_rejection_avg"] = boundary_rejection_avg_arr
     feat["range_position"] = range_position_arr
 
+    # --- New features (3) ---
+    # Direction: 1.0 for long, -1.0 for short, 0 for non-signal bars
+    direction_arr = np.zeros(n, dtype=np.float32)
+    for i, sig in signal_map.items():
+        direction_arr[i] = 1.0 if sig.direction == 1 else -1.0
+    feat["direction_feat"] = direction_arr
+
+    # VWAP distance: (close - VWAP_20) / close
+    vwap_20 = (df["Close"] * volumes).rolling(20, min_periods=1).sum() / pd.Series(volumes).rolling(20, min_periods=1).sum()
+    vwap_dist = ((closes - vwap_20.values) / (closes + 1e-8)).astype(np.float32)
+    feat["vwap_distance"] = np.clip(vwap_dist, -0.05, 0.05)
+
+    # Volume imbalance: up_vol / total_vol - 0.5 (rolling 10 bars)
+    up_vol = np.where(closes >= opens, volumes, 0.0)
+    up_vol_10 = pd.Series(up_vol).rolling(10, min_periods=1).sum().values
+    total_vol_10 = pd.Series(volumes).rolling(10, min_periods=1).sum().values
+    vol_imbalance = (up_vol_10 / (total_vol_10 + 1e-8) - 0.5).astype(np.float32)
+    feat["volume_imbalance"] = np.clip(vol_imbalance, -0.5, 0.5)
+
     # Drop warmup
     drop_n = 30
     feat = feat.iloc[drop_n:].reset_index(drop=True)
@@ -238,7 +258,7 @@ def _process_one_tf(args):
     if "timestamp" in df.columns:
         df = df[df["timestamp"] >= TRAIN_START].reset_index(drop=True)
 
-    actions, quality, mfe, sl_labels, swept_levels, signal_map = generate_labels(
+    actions, quality, mfe, sl_labels, ttp_labels, swept_levels, signal_map = generate_labels(
         df["High"].values, df["Low"].values,
         df["Close"].values, df["Open"].values,
         volumes=df["Volume"].values if "Volume" in df.columns else None,
@@ -253,6 +273,7 @@ def _process_one_tf(args):
     quality = quality[drop_n:]
     mfe = mfe[drop_n:]
     sl_labels = sl_labels[drop_n:]
+    ttp_labels = ttp_labels[drop_n:]
 
     feat_values = feat.values.astype(np.float32)
     signal_mask = actions != 0
@@ -262,11 +283,18 @@ def _process_one_tf(args):
     if total_signals == 0:
         return None
 
-    split_idx = int(len(feat_values) * 0.8)
+    # Create asset_ids and tf_ids arrays
+    TF_ID_MAP = {"15m": 0, "1h": 1, "4h": 2}
+    ASSET_ID_MAP = {1.0: 0, 2.0: 1, 3.0: 2, 4.0: 3, 5.0: 4}
+    n_bars = len(feat_values)
+    asset_id_arr = np.full(n_bars, ASSET_ID_MAP.get(asset_id, 0), dtype=np.int64)
+    tf_id_arr = np.full(n_bars, TF_ID_MAP.get(tf_key, 0), dtype=np.int64)
+
+    split_idx = int(n_bars * 0.8)
     return {
         "tf_key": tf_key,
         "label": f"{asset_name}/{tf_key}",
-        "n_bars": len(feat_values),
+        "n_bars": n_bars,
         "n_signals": total_signals,
         "n_profitable": n_profitable,
         "train_feat": feat_values[:split_idx],
@@ -274,11 +302,17 @@ def _process_one_tf(args):
         "train_quality": quality[:split_idx],
         "train_mfe": mfe[:split_idx],
         "train_sl": sl_labels[:split_idx],
+        "train_ttp": ttp_labels[:split_idx],
+        "train_asset_ids": asset_id_arr[:split_idx],
+        "train_tf_ids": tf_id_arr[:split_idx],
         "test_feat": feat_values[split_idx:],
         "test_actions": actions[split_idx:],
         "test_quality": quality[split_idx:],
         "test_mfe": mfe[split_idx:],
         "test_sl": sl_labels[split_idx:],
+        "test_ttp": ttp_labels[split_idx:],
+        "test_asset_ids": asset_id_arr[split_idx:],
+        "test_tf_ids": tf_id_arr[split_idx:],
     }
 
 
@@ -315,14 +349,16 @@ def load_data_set():
             tf_groups[tk] = {k: [] for k in [
                 "train_feat", "train_actions",
                 "train_quality", "train_mfe", "train_sl",
+                "train_ttp", "train_asset_ids", "train_tf_ids",
                 "test_feat", "test_actions",
                 "test_quality", "test_mfe", "test_sl",
+                "test_ttp", "test_asset_ids", "test_tf_ids",
             ]}
         g = tf_groups[tk]
         for split in ["train", "test"]:
             g[f"{split}_feat"].append(result[f"{split}_feat"])
             g[f"{split}_actions"].append(result[f"{split}_actions"])
-            for k in ["quality", "mfe", "sl"]:
+            for k in ["quality", "mfe", "sl", "ttp", "asset_ids", "tf_ids"]:
                 g[f"{split}_{k}"].append(result[f"{split}_{k}"])
 
     if not tf_groups:
@@ -355,6 +391,9 @@ def load_data_set():
             np.concatenate(g["train_quality"]),
             np.concatenate(g["train_mfe"]),
             np.concatenate(g["train_sl"]),
+            ttp=np.concatenate(g["train_ttp"]),
+            asset_ids=np.concatenate(g["train_asset_ids"]),
+            tf_ids=np.concatenate(g["train_tf_ids"]),
             window=window,
         )
         test_set = SFPDataset(
@@ -363,6 +402,9 @@ def load_data_set():
             np.concatenate(g["test_quality"]),
             np.concatenate(g["test_mfe"]),
             np.concatenate(g["test_sl"]),
+            ttp=np.concatenate(g["test_ttp"]),
+            asset_ids=np.concatenate(g["test_asset_ids"]),
+            tf_ids=np.concatenate(g["test_tf_ids"]),
             window=window,
         )
 
@@ -383,6 +425,18 @@ def quantile_loss(pred, target, tau):
     return torch.max(tau * err, (tau - 1) * err).mean()
 
 
+def quantile_loss_adaptive(pred, target, tau):
+    """Pinball loss with per-sample tau tensor.
+
+    Args:
+        pred: (N,) predicted values
+        target: (N,) target values
+        tau: (N,) per-sample quantile levels
+    """
+    err = target - pred
+    return torch.max(tau * err, (tau - 1) * err).mean()
+
+
 def evaluate(model, test_loaders):
     """Evaluate: classification gate + MFE-based WR at predicted TP levels.
 
@@ -392,6 +446,8 @@ def evaluate(model, test_loaders):
     all_cls_prob = []
     all_tp1_pred = []
     all_tp2_pred = []
+    all_tau1 = []
+    all_tau2 = []
     all_quality = []
     all_mfe = []
     all_sl = []
@@ -400,15 +456,18 @@ def evaluate(model, test_loaders):
 
     with torch.no_grad():
         for loader in test_loaders.values():
-            for x, direction, q, mfe, sl in loader:
+            for x, direction, q, mfe, sl, ttp, asset_id, tf_id in loader:
                 x = x.to(device)
                 q_t = q.to(device).float()
-                mfe_t = mfe.to(device).float()
+                asset_id = asset_id.to(device)
+                tf_id = tf_id.to(device)
 
-                out = model(x)  # (B, 3)
+                out = model(x, asset_ids=asset_id, tf_ids=tf_id)  # (B, 6)
                 cls_logit = out[:, 0]
                 tp1_pred = out[:, 1]
                 tp2_pred = out[:, 2]
+                tau1_pred = out[:, 3]
+                tau2_pred = out[:, 4]
 
                 cls_loss = nn.functional.binary_cross_entropy_with_logits(cls_logit, q_t)
                 total_loss += cls_loss.item()
@@ -417,6 +476,8 @@ def evaluate(model, test_loaders):
                 all_cls_prob.append(torch.sigmoid(cls_logit).cpu())
                 all_tp1_pred.append(tp1_pred.cpu())
                 all_tp2_pred.append(tp2_pred.cpu())
+                all_tau1.append(tau1_pred.cpu())
+                all_tau2.append(tau2_pred.cpu())
                 all_quality.append(q.cpu())
                 all_mfe.append(mfe.cpu())
                 all_sl.append(sl.cpu())
@@ -424,6 +485,8 @@ def evaluate(model, test_loaders):
     cls_prob = torch.cat(all_cls_prob)    # (N,)
     tp1_pred = torch.cat(all_tp1_pred)   # (N,)
     tp2_pred = torch.cat(all_tp2_pred)   # (N,)
+    tau1 = torch.cat(all_tau1)           # (N,)
+    tau2 = torch.cat(all_tau2)           # (N,)
     quality = torch.cat(all_quality)     # (N,)
     mfe = torch.cat(all_mfe)            # (N,)
     sl = torch.cat(all_sl)              # (N,)
@@ -431,7 +494,9 @@ def evaluate(model, test_loaders):
     base_wr = (quality == 1).float().mean().item() * 100
     avg_tp1_all = tp1_pred.mean().item() * 100
     avg_tp2_all = tp2_pred.mean().item() * 100
-    print(f"    Base WR: {base_wr:.0f}% | Pred TP1: {avg_tp1_all:.2f}% | Pred TP2: {avg_tp2_all:.2f}%")
+    avg_tau1 = tau1.mean().item()
+    avg_tau2 = tau2.mean().item()
+    print(f"    Base WR: {base_wr:.0f}% | Pred TP1: {avg_tp1_all:.2f}% | Pred TP2: {avg_tp2_all:.2f}% | tau1: {avg_tau1:.3f} | tau2: {avg_tau2:.3f}")
 
     results = {}
     for thresh in [0.3, 0.4, 0.5, 0.6, 0.7]:
@@ -493,7 +558,7 @@ def train():
     # Compute class weight for gate head
     all_q = []
     for loader in train_loaders.values():
-        for x, direction, q, mfe, sl in loader:
+        for x, direction, q, mfe, sl, ttp, asset_id, tf_id in loader:
             all_q.append(q)
     all_q = torch.cat(all_q)  # (N,)
     n_pos = (all_q == 1).sum().item()
@@ -519,36 +584,50 @@ def train():
         train_loss = 0
         n_batches = 0
         for loader in train_loaders.values():
-            for x, direction, q, mfe, sl in loader:
+            for x, direction, q, mfe, sl, ttp, asset_id, tf_id in loader:
                 x = x.to(device)
                 q_t = q.to(device).float()      # (B,)
                 mfe_t = mfe.to(device).float()   # (B,)
                 sl_t = sl.to(device).float()     # (B,)
+                ttp_t = ttp.to(device).float()   # (B,)
+                asset_id = asset_id.to(device)
+                tf_id = tf_id.to(device)
 
-                out = model(x)                   # (B, 3)
+                out = model(x, asset_ids=asset_id, tf_ids=tf_id)  # (B, 6)
                 cls_logit = out[:, 0]             # (B,)
                 tp1_pred = out[:, 1]              # (B,)
                 tp2_pred = out[:, 2]              # (B,)
+                tau1_pred = out[:, 3]             # (B,)
+                tau2_pred = out[:, 4]             # (B,)
+                ttp_pred = out[:, 5]              # (B,)
 
                 # Classification loss: BCE on quality gate
                 cls_loss = nn.functional.binary_cross_entropy_with_logits(
                     cls_logit, q_t, pos_weight=pos_weight,
                 )
 
-                # Regression loss: quantile on MFE, only for profitable signals
+                # Regression loss: adaptive quantile on MFE, only for profitable signals
                 profitable_mask = q_t > 0.5
                 if profitable_mask.any():
                     mfe_prof = mfe_t[profitable_mask]
                     tp1_prof = tp1_pred[profitable_mask]
                     tp2_prof = tp2_pred[profitable_mask]
+                    tau1_prof = tau1_pred[profitable_mask]
+                    tau2_prof = tau2_pred[profitable_mask]
                     reg_loss = (
-                        quantile_loss(tp1_prof, mfe_prof, tau=0.3) +
-                        quantile_loss(tp2_prof, mfe_prof, tau=0.7)
+                        quantile_loss_adaptive(tp1_prof, mfe_prof, tau1_prof) +
+                        quantile_loss_adaptive(tp2_prof, mfe_prof, tau2_prof)
                     )
+
+                    # TTP loss: smooth L1, profitable-only
+                    ttp_prof = ttp_pred[profitable_mask]
+                    ttp_target = ttp_t[profitable_mask]
+                    ttp_loss = nn.functional.smooth_l1_loss(ttp_prof, ttp_target)
                 else:
                     reg_loss = torch.tensor(0.0, device=device)
+                    ttp_loss = torch.tensor(0.0, device=device)
 
-                loss = cls_loss + reg_loss
+                loss = cls_loss + reg_loss + 0.5 * ttp_loss
 
                 optimizer.zero_grad()
                 loss.backward()

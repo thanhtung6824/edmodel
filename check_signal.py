@@ -68,14 +68,14 @@ print(f"Asset: {asset_name.upper()}  TF: {tf_key}  Candles: {len(df)}")
 print(f"Range: {df['timestamp'].iloc[0]} to {df['timestamp'].iloc[-1]}")
 print()
 
-# Detection + labels (6-tuple: actions, quality, mfe, sl_labels, swept_levels, signal_map)
+# Detection + labels (7-tuple: actions, quality, mfe, sl_labels, ttp_labels, swept_levels, signal_map)
 highs = df["High"].values
 lows = df["Low"].values
 closes = df["Close"].values
 opens = df["Open"].values
 volumes_arr = df["Volume"].values if "Volume" in df.columns else None
 
-actions, quality, mfe, sl_labels, swept_levels, signal_map = generate_labels(
+actions, quality, mfe, sl_labels, ttp_labels, swept_levels, signal_map = generate_labels(
     highs, lows, closes, opens, volumes=volumes_arr, tf_key=tf_key,
 )
 
@@ -108,8 +108,12 @@ for i in range(window - 1, len(feat_values)):
 
     x = scaled[i - window + 1 : i + 1]
     x_t = torch.FloatTensor(x).unsqueeze(0)
+    ASSET_ID_MAP = {1.0: 0, 2.0: 1, 3.0: 2, 4.0: 3, 5.0: 4}
+    TF_ID_MAP = {"15m": 0, "1h": 1, "4h": 2}
+    a_id = torch.LongTensor([ASSET_ID_MAP.get(asset_id, 0)])
+    t_id = torch.LongTensor([TF_ID_MAP.get(tf_key, 0)])
     with torch.no_grad():
-        out = model(x_t).squeeze(0)  # (3,)
+        out = model(x_t, asset_ids=a_id, tf_ids=t_id).squeeze(0)  # (6,)
     p_win = torch.sigmoid(out[0]).item()
     tp1_dist = out[1].item()
     tp2_dist = out[2].item()

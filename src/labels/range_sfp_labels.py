@@ -587,19 +587,22 @@ def detect_ranges_v2(
 # ---------------------------------------------------------------------------
 
 def compute_range_tp_sl_labels(highs, lows, closes, actions, swept_levels, signal_map, horizon=18):
-    """Compute MFE (max favorable excursion) + SL labels using range geometry.
+    """Compute MFE (max favorable excursion) + SL + TTP labels using range geometry.
 
     MFE = max favorable price move (as fraction of entry) before SL hit or
     horizon expiry.  quality = 1 if MFE > SL distance (profitable signal).
 
     SL = structural distance beyond tested boundary with 0.2% buffer.
 
-    Returns: (quality, mfe_labels, sl_labels)
+    TTP (time-to-peak) = peak_bar / horizon ∈ [0,1], how quickly MFE is reached.
+
+    Returns: (quality, mfe_labels, sl_labels, ttp_labels)
     """
     length = len(actions)
     quality = np.zeros(length, dtype=np.int64)
     mfe_labels = np.zeros(length, dtype=np.float32)
     sl_labels = np.zeros(length, dtype=np.float32)
+    ttp_labels = np.zeros(length, dtype=np.float32)
 
     stop_buffer = 0.002  # 0.2% beyond zone boundary
 
@@ -637,6 +640,7 @@ def compute_range_tp_sl_labels(highs, lows, closes, actions, swept_levels, signa
 
         # Track MFE: max favorable move before SL hit or horizon expiry
         mfe = 0.0
+        peak_bar = 0
         for j in range(i + 1, min(i + 1 + horizon, length)):
             if actions[i] == 1:  # long
                 if lows[j] <= stop_price:
@@ -646,12 +650,15 @@ def compute_range_tp_sl_labels(highs, lows, closes, actions, swept_levels, signa
                 if highs[j] >= stop_price:
                     break
                 favorable = (entry - lows[j]) / entry
-            mfe = max(mfe, favorable)
+            if favorable > mfe:
+                mfe = favorable
+                peak_bar = j - i  # bars after signal
 
         mfe_labels[i] = np.clip(mfe, 0.0, 0.15)
+        ttp_labels[i] = np.clip(peak_bar / horizon, 0.0, 1.0)
         quality[i] = 1 if mfe > sl else 0
 
-    return quality, mfe_labels, sl_labels
+    return quality, mfe_labels, sl_labels, ttp_labels
 
 
 # ---------------------------------------------------------------------------
@@ -829,8 +836,8 @@ def generate_labels(highs, lows, closes, opens, tf_key="4h"):
     n_short = int(np.sum(actions == 2))
     print(f"    Boundary-filtered: {n_boundary} signals ({n_long} long, {n_short} short)")
 
-    # --- MFE/SL labels ---
-    quality, mfe_labels, sl_labels = compute_range_tp_sl_labels(
+    # --- MFE/SL/TTP labels ---
+    quality, mfe_labels, sl_labels, ttp_labels = compute_range_tp_sl_labels(
         highs, lows, closes, actions, swept_levels, signal_map, horizon=18,
     )
     total_final = int(np.sum(actions != 0))
