@@ -21,6 +21,7 @@ from src.labels.liq_sfp_labels import generate_labels
 from src.labels.range_sfp_labels import detect_market_structure
 from src.labels.three_tap_labels import compute_atr
 from src.models.dataset import SFPDataset
+from server.pipeline import compute_htf_features
 
 device = torch.accelerator.current_accelerator().type if torch.accelerator.is_available() else "cpu"
 print(f"Using {device} device")
@@ -59,14 +60,15 @@ WINDOW_BY_TF = {"15m": 120, "1h": 48, "4h": 30}
 TRAIN_START = "2018-01-01"
 print(f"Training on: {TIMEFRAMES} | Assets: {SELECTED_ASSETS} | Start: {TRAIN_START} | Model: {MODEL_FILE}")
 
-N_FEATURES = 33
+N_FEATURES = 37
 
 
 def build_features(df, actions, signal_map, tf_hours, asset_id=1.0):
-    """Build 33 Liq+Range+SFP features.
+    """Build 37 Liq+Range+SFP features.
 
     6 range + 6 liquidation + 6 SFP candle + 6 context + 6 range fingerprint
-    + 3 new: direction, vwap_distance, volume_imbalance.
+    + 3 new: direction, vwap_distance, volume_imbalance
+    + 4 HTF: htf_trend, htf_rsi, htf_ms_direction, htf_ms_strength.
     """
     n = len(df)
     highs = df["High"].values
@@ -227,6 +229,13 @@ def build_features(df, actions, signal_map, tf_hours, asset_id=1.0):
     total_vol_10 = pd.Series(volumes).rolling(10, min_periods=1).sum().values
     vol_imbalance = (up_vol_10 / (total_vol_10 + 1e-8) - 0.5).astype(np.float32)
     feat["volume_imbalance"] = np.clip(vol_imbalance, -0.5, 0.5)
+
+    # --- HTF alignment features (4) ---
+    htf_trend, htf_rsi, htf_ms_dir, htf_ms_str = compute_htf_features(highs, lows, closes, n)
+    feat["htf_trend"] = htf_trend
+    feat["htf_rsi"] = htf_rsi
+    feat["htf_ms_direction"] = htf_ms_dir
+    feat["htf_ms_strength"] = htf_ms_str
 
     # Drop warmup
     drop_n = 30
@@ -535,7 +544,7 @@ def train():
     train_loaders, test_loaders, n_features = load_data_set()
 
     from src.models.liq_range_sfp_model import LiqRangeSFPClassifier
-    model = LiqRangeSFPClassifier(n_features=n_features, window=WINDOW, hidden=32).to(device)
+    model = LiqRangeSFPClassifier(n_features=n_features, window=WINDOW, hidden=48).to(device)
 
     if RESUME and os.path.exists(MODEL_FILE):
         model.load_state_dict(torch.load(MODEL_FILE, map_location=device, weights_only=True))

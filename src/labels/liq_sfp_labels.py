@@ -20,6 +20,8 @@ from src.labels.range_sfp_labels import (
 from src.labels.liq_labels import compute_liq_price, LEVERAGE_TIERS
 from src.labels.three_tap_labels import compute_atr
 
+# Per-TF forward horizon for MFE/SL/TTP labels
+HORIZON_MAP = {"15m": 36, "1h": 18, "4h": 18}
 
 # ---------------------------------------------------------------------------
 # Data structures
@@ -472,7 +474,7 @@ def generate_labels(highs, lows, closes, opens, volumes=None, tf_key="4h"):
 
     # --- MFE/SL/TTP labels ---
     quality, mfe_labels, sl_labels, ttp_labels = compute_range_tp_sl_labels(
-        highs, lows, closes, actions, swept_levels, signal_map, horizon=18,
+        highs, lows, closes, actions, swept_levels, signal_map, horizon=HORIZON_MAP.get(tf_key, 18),
     )
     total_final = int(np.sum(actions != 0))
     if total_final > 0:

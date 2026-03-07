@@ -11,18 +11,11 @@ from apscheduler.triggers.cron import CronTrigger
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 
-from server.binance import (
-    fetch_candles,
-    load_bar_cache,
-    merge_bar_cache,
-    recompute_indicators,
-    save_bar_cache,
-    seed_from_csv,
-)
+from server.binance import fetch_candles
 from server.config import (
     ASSETS,
-    BAR_CACHE_MAX,
     HISTORY_FILES,
+    HORIZON_BY_TF,
     LIVE_SIGNALS_PATH,
     MODEL_CONFIDENCE,
     MODEL_PATH,
@@ -146,7 +139,8 @@ def _resolve_open_signals(job_key: str, candles: list[dict]):
                         changed = True
                         break
 
-                if bars_after >= SIGNAL_HORIZON:
+                horizon = HORIZON_BY_TF.get(sig["timeframe"], SIGNAL_HORIZON)
+                if bars_after >= horizon:
                     last_close = c["close"]
                     if is_long:
                         pnl = (last_close - entry) / (entry - sl_price + 1e-8)
@@ -220,7 +214,8 @@ def _resolve_open_signals(job_key: str, candles: list[dict]):
                         changed = True
                         break
 
-                if bars_after >= SIGNAL_HORIZON:
+                horizon = HORIZON_BY_TF.get(sig["timeframe"], SIGNAL_HORIZON)
+                if bars_after >= horizon:
                     # Expired after partial — close at market, count partial TP1 + remaining P&L
                     last_close = c["close"]
                     if is_long:
@@ -247,19 +242,8 @@ async def run_job(asset_key: str, tf_key: str):
     logger.info(f"[{job_key}] Job started ({symbol})")
 
     try:
-        fresh_df = await fetch_candles(symbol, cfg["interval"], limit=N_CANDLES)
-        logger.info(f"[{job_key}] Fetched {len(fresh_df)} fresh candles")
-
-        # ─── Bar Cache: merge fresh with cached bars ──────────────
-        cached_df = load_bar_cache(asset_key, tf_key)
-        if cached_df.empty:
-            cached_df = seed_from_csv(asset_key, tf_key)
-
-        merged_df = merge_bar_cache(cached_df, fresh_df, max_bars=BAR_CACHE_MAX)
-        save_bar_cache(merged_df, asset_key, tf_key)
-
-        df = recompute_indicators(merged_df)
-        logger.info(f"[{job_key}] Bar cache: {len(merged_df)} bars total → {len(df)} after indicators")
+        df = await fetch_candles(symbol, cfg["interval"], limit=N_CANDLES)
+        logger.info(f"[{job_key}] Fetched {len(df)} candles")
 
         # Store candle data for chart endpoint
         candles = [

@@ -11,6 +11,83 @@ from src.labels.range_sfp_labels import detect_market_structure
 from src.labels.three_tap_labels import compute_atr
 
 
+def _compute_rsi(closes, period=14):
+    """Compute RSI from close prices array. Returns array of same length."""
+    delta = np.diff(closes, prepend=closes[0])
+    gain = np.where(delta > 0, delta, 0.0).astype(np.float64)
+    loss = np.where(delta < 0, -delta, 0.0).astype(np.float64)
+    avg_gain = np.zeros_like(closes, dtype=np.float64)
+    avg_loss = np.zeros_like(closes, dtype=np.float64)
+    avg_gain[period] = np.mean(gain[1:period + 1])
+    avg_loss[period] = np.mean(loss[1:period + 1])
+    for i in range(period + 1, len(closes)):
+        avg_gain[i] = (avg_gain[i - 1] * (period - 1) + gain[i]) / period
+        avg_loss[i] = (avg_loss[i - 1] * (period - 1) + loss[i]) / period
+    rs = avg_gain / (avg_loss + 1e-10)
+    rsi = 100 - 100 / (1 + rs)
+    rsi[:period] = 50.0  # warmup
+    return rsi
+
+
+def compute_htf_features(highs, lows, closes, n, resample_factor=4):
+    """Compute 4 higher-timeframe alignment features by resampling 4:1.
+
+    Returns (htf_trend, htf_rsi, htf_ms_direction, htf_ms_strength) — 4 arrays of length n.
+    """
+    # Resample OHLC by taking groups of `resample_factor` bars
+    rf = resample_factor
+    n_groups = n // rf
+    remainder = n - n_groups * rf
+
+    htf_trend = np.zeros(n, dtype=np.float32)
+    htf_rsi = np.zeros(n, dtype=np.float32) + 0.5  # default neutral
+    htf_ms_direction = np.zeros(n, dtype=np.float32)
+    htf_ms_strength = np.zeros(n, dtype=np.float32)
+
+    if n_groups < 22:  # need at least 21 bars for EMA21
+        return htf_trend, htf_rsi, htf_ms_direction, htf_ms_strength
+
+    # Build resampled arrays
+    start = remainder  # skip partial first group
+    rs_highs = np.array([highs[start + i * rf: start + (i + 1) * rf].max() for i in range(n_groups)])
+    rs_lows = np.array([lows[start + i * rf: start + (i + 1) * rf].min() for i in range(n_groups)])
+    rs_closes = np.array([closes[start + (i + 1) * rf - 1] for i in range(n_groups)])
+
+    # EMA21 on resampled closes
+    ema = np.zeros(n_groups, dtype=np.float64)
+    ema[0] = rs_closes[0]
+    alpha = 2.0 / 22.0
+    for i in range(1, n_groups):
+        ema[i] = alpha * rs_closes[i] + (1 - alpha) * ema[i - 1]
+
+    # HTF trend: (close - EMA21) / close
+    htf_trend_rs = np.clip((rs_closes - ema) / (rs_closes + 1e-8), -0.5, 0.5).astype(np.float32)
+
+    # HTF RSI
+    htf_rsi_rs = (_compute_rsi(rs_closes, period=14) / 100.0).astype(np.float32)
+
+    # HTF market structure
+    htf_ms_dir_rs, htf_ms_str_rs, _, _ = detect_market_structure(rs_highs, rs_lows, n=10)
+
+    # Map resampled values back to original bars (forward-fill)
+    for g in range(n_groups):
+        bar_start = start + g * rf
+        bar_end = start + (g + 1) * rf
+        htf_trend[bar_start:bar_end] = htf_trend_rs[g]
+        htf_rsi[bar_start:bar_end] = htf_rsi_rs[g]
+        htf_ms_direction[bar_start:bar_end] = htf_ms_dir_rs[g]
+        htf_ms_strength[bar_start:bar_end] = htf_ms_str_rs[g]
+
+    # Fill remainder at the start with first group's values
+    if remainder > 0 and n_groups > 0:
+        htf_trend[:start] = htf_trend_rs[0]
+        htf_rsi[:start] = htf_rsi_rs[0]
+        htf_ms_direction[:start] = htf_ms_dir_rs[0]
+        htf_ms_strength[:start] = htf_ms_str_rs[0]
+
+    return htf_trend, htf_rsi, htf_ms_direction, htf_ms_strength
+
+
 def run_liq_range_sfp_detection(df: pd.DataFrame, tf_key: str):
     """Run Liq+Range+SFP label generation.
 
@@ -41,14 +118,15 @@ def build_liq_range_sfp_features(
     tf_hours: float,
     asset_id: float = 1.0,
 ):
-    """Build 33 Liq+Range+SFP features.
+    """Build 37 Liq+Range+SFP features.
 
     6 range + 6 liquidation + 6 SFP candle + 6 context + 6 range fingerprint
-    + 3 new: direction, vwap_distance, volume_imbalance.
+    + 3 new: direction, vwap_distance, volume_imbalance
+    + 4 HTF: htf_trend, htf_rsi, htf_ms_direction, htf_ms_strength.
     Mirrors src/train_liq_range_sfp.py:build_features() exactly.
 
     Returns:
-        feat_values: float32 array (N-30, 33)
+        feat_values: float32 array (N-30, 37)
         actions_trimmed: actions with warmup dropped
         signal_map_shifted: signal_map with indices shifted by -30
     """
@@ -209,6 +287,13 @@ def build_liq_range_sfp_features(
     total_vol_10 = pd.Series(volumes).rolling(10, min_periods=1).sum().values
     vol_imbalance = (up_vol_10 / (total_vol_10 + 1e-8) - 0.5).astype(np.float32)
     feat["volume_imbalance"] = np.clip(vol_imbalance, -0.5, 0.5)
+
+    # --- HTF alignment features (4) ---
+    htf_trend, htf_rsi, htf_ms_dir, htf_ms_str = compute_htf_features(highs, lows, closes, n)
+    feat["htf_trend"] = htf_trend
+    feat["htf_rsi"] = htf_rsi
+    feat["htf_ms_direction"] = htf_ms_dir
+    feat["htf_ms_strength"] = htf_ms_str
 
     # Drop warmup
     drop_n = 30

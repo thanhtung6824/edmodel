@@ -18,11 +18,10 @@ TIMEFRAME = "15min"
 TF_KEY = "15m"
 TF_HOURS = 0.25
 CUTOFF = "2024-01-01"
-HORIZON = 18
 WINDOW_BY_TF = {"15m": 120, "1h": 48, "4h": 30}
 MODEL_FILE = "best_model_liq_range_sfp.pth"
 SCALER_FILE = "liq_range_sfp_scaler.joblib"
-N_FEATURES = 33
+N_FEATURES = 37
 THRESHOLDS = [0.3, 0.4, 0.5, 0.6, 0.7]
 
 
@@ -269,7 +268,7 @@ def main():
 
     print("\nLoading model + scaler...")
     window = max(WINDOW_BY_TF.values())
-    model = LiqRangeSFPClassifier(n_features=N_FEATURES, window=window, hidden=32).to(device)
+    model = LiqRangeSFPClassifier(n_features=N_FEATURES, window=window, hidden=48).to(device)
     model.load_state_dict(torch.load(MODEL_FILE, map_location=device, weights_only=True))
     scaler = joblib.load(SCALER_FILE)
     print(f"  Model: {MODEL_FILE} | Scaler: {SCALER_FILE}")

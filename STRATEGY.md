@@ -188,7 +188,7 @@ Computed lazily, only for bars that pass the boundary filter:
 
 ---
 
-## 6. Feature Engineering (33 Features)
+## 6. Feature Engineering (37 Features)
 
 **File:** `src/train_liq_range_sfp.py:build_features()` / `server/pipeline.py:build_liq_range_sfp_features()`
 
@@ -251,47 +251,57 @@ All features are computed per bar after dropping 30 warmup bars (for ATR-14, MA-
 | 32 | `vwap_distance` | (close - VWAP_20) / close, clipped [-0.05, 0.05] |
 | 33 | `volume_imbalance` | up_vol_10 / total_vol_10 - 0.5, clipped [-0.5, 0.5] |
 
+### HTF Alignment Features (4)
+Computed by resampling current TF data 4:1 to simulate higher-TF context (15m→1h, 1h→4h, 4h→16h).
+
+| # | Feature | Description |
+|---|---|---|
+| 34 | `htf_trend` | (close - EMA21) / close on resampled data, clipped [-0.5, 0.5] |
+| 35 | `htf_rsi` | RSI-14 on resampled data, normalized [0, 1] |
+| 36 | `htf_ms_direction` | market structure direction on resampled (-1, 0, +1) |
+| 37 | `htf_ms_strength` | market structure strength on resampled |
+
 ---
 
 ## 7. Model Architecture
 
 **File:** `src/models/liq_range_sfp_model.py`
 
-`LiqRangeSFPClassifier` — 4-head model with direction-conditioned FiLM, positional encoding, and 2-layer transformer (~35K parameters).
+`LiqRangeSFPClassifier` — 4-head model with direction-conditioned FiLM, positional encoding, and 2-layer transformer (~73K parameters).
 
 ```
-Input: (batch, window, 33)
+Input: (batch, window, 37)
   |
-Linear(33 -> 32) + ReLU            # per-bar projection
+Linear(37 -> 48) + ReLU            # per-bar projection
   |
-+ pos_embed (learnable, 1×window×32)  # positional encoding
++ pos_embed (learnable, 1×window×48)  # positional encoding
   |
-MultiheadAttention(32, heads=1)    # self-attention layer 1
+MultiheadAttention(48, heads=1)    # self-attention layer 1
   + residual + LayerNorm
   |
-FFN: Linear(32->64) -> ReLU -> Linear(64->32)
+FFN: Linear(48->96) -> ReLU -> Linear(96->48)
   + residual + LayerNorm
   |
-MultiheadAttention(32, heads=2)    # self-attention layer 2
+MultiheadAttention(48, heads=2)    # self-attention layer 2
   + residual + LayerNorm
   |
-FFN: Linear(32->64) -> ReLU -> Linear(64->32)
+FFN: Linear(48->96) -> ReLU -> Linear(96->48)
   + residual + LayerNorm
   |
 Three pooling strategies:
-  - mean(dim=1)  -> global context   (32)
-  - last bar     -> signal bar       (32)
-  - max(dim=1)   -> peak activation  (32)
+  - mean(dim=1)  -> global context   (48)
+  - last bar     -> signal bar       (48)
+  - max(dim=1)   -> peak activation  (48)
   |
-Concat -> (96)
+Concat -> (144)
   |
-  +---> cls_head:  Linear(96->32) -> ReLU -> Dropout(0.15) -> Linear(32->1)  ->  logit     -> sigmoid -> P(profitable)
+  +---> cls_head:  Linear(144->48) -> ReLU -> Dropout(0.15) -> Linear(48->1)  ->  logit     -> sigmoid -> P(profitable)
   |
-  +---> tp1_head:  Linear(96->32) -> ReLU -> Dropout(0.15) -> Linear(32->1)  ->  softplus  -> TP1 distance (fixed τ=0.15)
+  +---> tp1_head:  Linear(144->48) -> ReLU -> Dropout(0.15) -> Linear(48->1)  ->  softplus  -> TP1 distance (fixed τ=0.15)
   |
-  +---> tp2_head:  Linear(96->32) -> ReLU -> Dropout(0.15) -> Linear(32->1)  ->  softplus  -> TP2 distance (fixed τ=0.40)
+  +---> tp2_head:  Linear(144->48) -> ReLU -> Dropout(0.15) -> Linear(48->1)  ->  softplus  -> TP2 distance (fixed τ=0.40)
   |
-  +---> ttp_head:  Linear(96->32) -> ReLU -> Dropout(0.15) -> Linear(32->1)  ->  sigmoid  -> time-to-peak ∈ [0, 1]
+  +---> ttp_head:  Linear(144->48) -> ReLU -> Dropout(0.15) -> Linear(48->1)  ->  sigmoid  -> time-to-peak ∈ [0, 1]
   |
   +--- FiLM conditioning on all 4 heads (scale ∈ [0.7, 1.3], bias ∈ [-0.1, 0.1])
 ```
@@ -306,7 +316,7 @@ Applies per-asset/TF/direction scale and bias to all 4 heads:
 
 ### Positional Encoding
 Learnable positional embeddings added after bar projection:
-- `pos_embed = nn.Parameter(torch.randn(1, window, 32) * 0.02)`
+- `pos_embed = nn.Parameter(torch.randn(1, window, 48) * 0.02)`
 - Allows the model to distinguish temporal position of patterns within the window
 
 ### Time-to-Peak Head
@@ -335,7 +345,10 @@ Predicts when the MFE peak occurs within the forward horizon:
 
 **File:** `src/labels/range_sfp_labels.py:compute_range_tp_sl_labels()`
 
-Evaluated over an 18-bar forward horizon.
+Evaluated over a per-TF forward horizon:
+- **15m**: 36 bars (9 hours) — longer horizon gives 15m moves more room to develop
+- **1h**: 18 bars (18 hours)
+- **4h**: 18 bars (3 days)
 
 ### MFE (Max Favorable Excursion)
 The maximum favorable price move before SL is hit or horizon expires:
@@ -414,7 +427,7 @@ Per scheduled job (each asset x TF):
 1. Fetch 1000 candles from Binance, merge with bar cache (up to 5000 bars)
 2. Recompute indicators (OBV, BB, EMA21, RSI)
 3. Run `run_liq_range_sfp_detection()` -> signals with boundary filter
-4. Build features (33) -> scale with saved `StandardScaler`
+4. Build features (37) -> scale with saved `StandardScaler`
 5. For each signal bar: `predict_bar(model, scaled, bar_idx, tf_key, asset_id)` -> `(P(win), tp1_dist, tp2_dist, ttp)`
 6. If `P(win) >= 0.3`: emit signal with entry, model-predicted TP levels, and ttp
 
@@ -426,7 +439,7 @@ Per scheduled job (each asset x TF):
 - **Best TP**: TP2 if its R:R exceeds TP1's by 1.5x, else TP1
 - **TTP**: predicted time-to-peak ∈ [0, 1] (fraction of forward horizon)
 - **Expiry**: 3 bars
-- **Resolution horizon**: 18 bars (TP hit, SL hit, or mark-to-market at expiry)
+- **Resolution horizon**: per-TF (36 bars for 15m, 18 bars for 1h/4h)
 
 ### Partial TP Execution with TTP Trailing Stop
 When TP1 is hit before TP2:
@@ -454,15 +467,34 @@ TTP_TRAILING = {
 
 ---
 
-## Current Performance — v3 (all assets, all TFs, 2024 OOS)
+## Benchmark Performance (2024 OOS, P>0.7)
 
+### v4 (current) — 37 features, hidden=48, per-TF horizon, ~74K params
+
+| Asset/TF | Trades | Gate WR | TP1 WR | TP1 EV% | Total R |
+|----------|--------|---------|--------|---------|---------|
+| SOL/4h | 928 | 83% | 62% | +1.69% | +1503R |
+| ETH/4h | 887 | 82% | 66% | +1.39% | +997R |
+| SOL/15m | 2,083 | 84% | 74% | +1.06% | +1726R |
+| SOL/1h | 2,879 | 78% | 62% | +1.00% | +2184R |
+| BTC/4h | 677 | 76% | 56% | +0.88% | +455R |
+| ETH/1h | 1,844 | 76% | 64% | +0.86% | +1175R |
+| ETH/15m | 1,114 | 79% | 67% | +0.78% | +812R |
+| BTC/15m | 552 | 78% | 63% | +0.55% | +362R |
+| BTC/1h | 1,250 | 65% | 55% | +0.41% | +494R |
+| GOLD/15m | 63 | 78% | 83% | +0.32% | +49R |
+| GOLD/1h | 116 | 52% | 43% | -0.13% | +21R |
+| GOLD/4h | 199 | 60% | 41% | -0.10% | +3R |
+
+10/12 asset/TF combos positive EV. Aggregate at P>0.7:
 ```
-P > 0.3: 12612 trades | Gate WR: 59% | TP1: 51%WR EV=+0.253% | TP2: 34%WR EV=-0.059%
-P > 0.5:  9287 trades | Gate WR: 66% | TP1: 56%WR EV=+0.465% | TP2: 37%WR EV=+0.184%
-P > 0.7:  5311 trades | Gate WR: 74% | TP1: 62%WR EV=+0.758% | TP2: 42%WR EV=+0.527%
+P > 0.3: 24772 trades | TP1 EV=+0.361%
+P > 0.5: 18360 trades | TP1 EV=+0.624%
+P > 0.7: 12597 trades | TP1 EV=+0.905%
 ```
 
-### Per-Asset Best EV (P>0.7, 2024 OOS benchmark)
+### v3 — 33 features, hidden=32, fixed 18-bar horizon, ~35K params
+
 | Asset/TF | Trades | Gate WR | TP1 WR | TP1 EV% | Total R |
 |----------|--------|---------|--------|---------|---------|
 | SOL/4h | 725 | 82% | 73% | +1.58% | +1158R |
@@ -478,36 +510,31 @@ P > 0.7:  5311 trades | Gate WR: 74% | TP1: 62%WR EV=+0.758% | TP2: 42%WR EV=+0.
 | GOLD/15m | 46 | 63% | 70% | +0.25% | +26R |
 | BTC/15m | 233 | 68% | 52% | +0.20% | +106R |
 
-All 12 asset/TF combos are **positive EV** at their best threshold.
-
-### Previous Performance (v2: adaptive tau, no pos encoding, 1-layer, no direction FiLM)
+12/12 positive EV. Aggregate at P>0.7:
 ```
-P > 0.3: 14134 trades | Gate WR: 58% | TP1: 46%WR EV=+0.14% | TP2: 29%WR EV=-0.23%
-P > 0.5: 9505 trades  | Gate WR: 68% | TP1: 53%WR EV=+0.49% | TP2: 34%WR EV=+0.16%
-P > 0.7: 5133 trades  | Gate WR: 78% | TP1: 61%WR EV=+0.89% | TP2: 40%WR EV=+0.63%
+P > 0.3: 12612 trades | TP1 EV=+0.253%
+P > 0.5:  9287 trades | TP1 EV=+0.465%
+P > 0.7:  5311 trades | TP1 EV=+0.758%
 ```
 
-### Previous Performance (v1: 30 features, fixed τ, no FiLM)
-```
-P > 0.3: 14403 trades | Gate WR: 58% | TP1: 43%WR EV=+0.12% | TP2: 14%WR EV=-0.70%
-P > 0.5: 9478 trades  | Gate WR: 68% | TP1: 49%WR EV=+0.47% | TP2: 17%WR EV=-0.36%
-P > 0.7: 4035 trades  | Gate WR: 79% | TP1: 56%WR EV=+0.92% | TP2: 20%WR EV=+0.13%
-```
-
-### Key Improvements (v2 → v3)
-- **TP1 WR**: 46-61% → 51-62% (improved gate discrimination)
-- **TP2 EV**: now positive at P>0.5+ across most asset/TF combos
-- **Direction FiLM**: enables asymmetric long/short TP targets
-- **Positional encoding**: model can distinguish temporal position of patterns
-- **2-layer transformer**: deeper feature extraction before pooling
-- **Tau heads removed**: fixed τ=0.15/0.40 matches what adaptive heads converged to, saves 6K params
-- **TTP trailing stop**: model's time-to-peak prediction now drives exit logic
+### Key Changes (v3 → v4)
+- **15m massively improved** (main goal): BTC +0.20→+0.55%, ETH +0.51→+0.78%, SOL +0.86→+1.06%, all with 2x trades
+- **More trades everywhere**: 12,597 vs 5,311 at P>0.7 (2.4x)
+- **Aggregate TP1 EV up**: +0.758% → +0.905% at P>0.7
+- **GOLD 1h/4h regressed** to negative EV (v3 had 72/59 trades with 99%/93% WR — likely overfit)
 
 ---
 
 ## Implemented Improvements
 
-### v3 (current)
+### v4 (current)
+3 improvements targeting model capacity and 15m performance:
+
+1. ~~**Per-TF horizon**~~ — **Done.** 15m horizon increased 18→36 bars (9 hours) to give moves more room to develop. 1h/4h keep 18 bars.
+2. ~~**Hidden dim 48**~~ — **Done.** Hidden dimension increased 32→48 across all layers (~73K params, up from ~35K). More capacity for 37-feature input.
+3. ~~**Multi-TF alignment features**~~ — **Done.** 4 new HTF features (33→37 total) computed by resampling current TF data 4:1: htf_trend, htf_rsi, htf_ms_direction, htf_ms_strength.
+
+### v3
 4 architecture changes + server-side trailing stop:
 
 1. ~~**Remove tau heads**~~ — **Done.** Adaptive tau heads always pinned at floor values (wasted 6,274 params). Replaced with fixed τ=0.15/0.40 in loss function.
@@ -526,12 +553,8 @@ P > 0.7: 4035 trades  | Gate WR: 79% | TP1: 56%WR EV=+0.92% | TP2: 20%WR EV=+0.1
 
 ## Potential Next Improvements
 
-1. **Multi-horizon training** — current MFE uses fixed 18-bar horizon. Training with multiple horizons (6, 12, 18, 36) and letting the model select optimal horizon per signal could capture both quick scalps and extended moves.
+1. **Ensemble/stacking** — train multiple models with different random seeds, use consensus voting for the gate and average for TP regression. Would reduce variance at the cost of inference speed.
 
-2. **15m timeframe performance** — 15m shows weaker performance across all assets. Could benefit from TF-specific training hyperparameters (e.g., more aggressive filtering, tighter SL, or shorter horizon).
+2. **Online learning** — periodically fine-tune on recent signals with known outcomes to adapt to regime changes. Would need careful implementation to prevent catastrophic forgetting.
 
-3. **Ensemble/stacking** — train multiple models with different random seeds, use consensus voting for the gate and average for TP regression. Would reduce variance at the cost of inference speed.
-
-4. **Online learning** — periodically fine-tune on recent signals with known outcomes to adapt to regime changes. Would need careful implementation to prevent catastrophic forgetting.
-
-5. **Order book features** — if available, add spread, depth imbalance, and trade flow metrics at signal time. Would require live data integration but could significantly improve gate accuracy.
+3. **Order book features** — if available, add spread, depth imbalance, and trade flow metrics at signal time. Would require live data integration but could significantly improve gate accuracy.

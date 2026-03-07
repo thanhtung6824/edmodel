@@ -27,10 +27,10 @@ TF_KEYS = {"15min": "15m", "1h": "1h", "4h": "4h"}
 TF_HOURS = {"15min": 0.25, "1h": 1.0, "4h": 4.0}
 WINDOW_BY_TF = {"15m": 120, "1h": 48, "4h": 30}
 
-HORIZON = 18
+HORIZON_BY_TF = {"15m": 36, "1h": 18, "4h": 18}
 MODEL_FILE = "best_model_liq_range_sfp.pth"
 SCALER_FILE = "liq_range_sfp_scaler.joblib"
-N_FEATURES = 33
+N_FEATURES = 37
 THRESHOLDS = [0.3, 0.4, 0.5, 0.6, 0.7]
 
 ASSETS = {
@@ -55,7 +55,7 @@ def load_model():
         sys.exit(1)
 
     window = max(WINDOW_BY_TF.values())
-    model = LiqRangeSFPClassifier(n_features=N_FEATURES, window=window, hidden=32)
+    model = LiqRangeSFPClassifier(n_features=N_FEATURES, window=window, hidden=48)
     model.load_state_dict(torch.load(MODEL_FILE, map_location="cpu", weights_only=True))
     model.eval()
     print(f"Loaded model from {MODEL_FILE}")
@@ -255,7 +255,7 @@ def run_benchmark():
         out_file = "benchmark/liq_range_sfp_results.txt"
         with open(out_file, "w") as f:
             f.write(f"LIQ+RANGE+SFP BENCHMARK RESULTS (MFE Regression)\n")
-            f.write(f"Model: {MODEL_FILE}  |  Cutoff: {CUTOFF}  |  Horizon: {HORIZON} bars\n")
+            f.write(f"Model: {MODEL_FILE}  |  Cutoff: {CUTOFF}  |  Horizon: {HORIZON_BY_TF}\n")
             f.write(f"{'='*120}\n\n")
 
             for r in all_results:

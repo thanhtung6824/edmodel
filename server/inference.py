@@ -12,7 +12,7 @@ import torch
 from sklearn.preprocessing import StandardScaler
 
 from src.models.liq_range_sfp_model import LiqRangeSFPClassifier
-from server.config import WINDOW, WINDOW_BY_TF, N_FEATURES
+from server.config import WINDOW, WINDOW_BY_TF, N_FEATURES, HIDDEN_DIM
 
 # Asset/TF ID maps (must match training)
 ASSET_ID_MAP = {1.0: 0, 2.0: 1, 3.0: 2, 4.0: 3, 5.0: 4}
@@ -27,7 +27,7 @@ def load_scaler(path: str) -> StandardScaler:
 
 def load_model(path: str) -> LiqRangeSFPClassifier:
     """Load trained LiqRangeSFPClassifier model (CPU only for server)."""
-    model = LiqRangeSFPClassifier(n_features=N_FEATURES, window=WINDOW, hidden=32)
+    model = LiqRangeSFPClassifier(n_features=N_FEATURES, window=WINDOW, hidden=HIDDEN_DIM)
     model.load_state_dict(torch.load(path, map_location="cpu", weights_only=True))
     model.eval()
     return model

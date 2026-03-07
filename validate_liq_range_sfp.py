@@ -17,13 +17,14 @@ from src.labels.liq_sfp_labels import generate_labels
 from src.labels.range_sfp_labels import detect_market_structure
 from src.labels.three_tap_labels import compute_atr
 from src.models.liq_range_sfp_model import LiqRangeSFPClassifier
+from server.pipeline import compute_htf_features
 
 device = torch.accelerator.current_accelerator().type if torch.accelerator.is_available() else "cpu"
 print(f"Using {device} device")
 
 from server.config import WINDOW_BY_TF
 
-N_FEATURES = 33
+N_FEATURES = 37
 MODEL_FILE = "best_model_liq_range_sfp.pth"
 
 
@@ -214,6 +215,52 @@ def run_pipeline(df, tf_key="4h", tf_hours=4.0):
     feat["tf_hours"] = tf_hours / 4.0
     feat["asset_id"] = 1.0
 
+    # --- Range fingerprint features (6) ---
+    signal_type_arr = np.zeros(n, dtype=np.float32)
+    is_recaptured_arr = np.zeros(n, dtype=np.float32)
+    is_nested_arr = np.zeros(n, dtype=np.float32)
+    touch_symmetry_arr = np.zeros(n, dtype=np.float32)
+    boundary_rejection_avg_arr = np.zeros(n, dtype=np.float32)
+    range_position_arr = np.zeros(n, dtype=np.float32)
+
+    for i, sig in signal_map.items():
+        signal_type_arr[i] = float(sig.signal_type)
+        is_recaptured_arr[i] = sig.is_recaptured
+        is_nested_arr[i] = sig.is_nested
+        touch_symmetry_arr[i] = sig.touch_symmetry
+        boundary_rejection_avg_arr[i] = np.clip(sig.boundary_rejection_avg, 0, 2.0)
+        range_position_arr[i] = sig.range_position
+
+    feat["signal_type"] = signal_type_arr
+    feat["is_recaptured"] = is_recaptured_arr
+    feat["is_nested"] = is_nested_arr
+    feat["touch_symmetry"] = touch_symmetry_arr
+    feat["boundary_rejection_avg"] = boundary_rejection_avg_arr
+    feat["range_position"] = range_position_arr
+
+    # --- New features (3) ---
+    direction_arr = np.zeros(n, dtype=np.float32)
+    for i, sig in signal_map.items():
+        direction_arr[i] = 1.0 if sig.direction == 1 else -1.0
+    feat["direction_feat"] = direction_arr
+
+    vwap_20 = (df["Close"] * volumes).rolling(20, min_periods=1).sum() / pd.Series(volumes).rolling(20, min_periods=1).sum()
+    vwap_dist = ((closes - vwap_20.values) / (closes + 1e-8)).astype(np.float32)
+    feat["vwap_distance"] = np.clip(vwap_dist, -0.05, 0.05)
+
+    up_vol = np.where(closes >= opens, volumes, 0.0)
+    up_vol_10 = pd.Series(up_vol).rolling(10, min_periods=1).sum().values
+    total_vol_10 = pd.Series(volumes).rolling(10, min_periods=1).sum().values
+    vol_imbalance = (up_vol_10 / (total_vol_10 + 1e-8) - 0.5).astype(np.float32)
+    feat["volume_imbalance"] = np.clip(vol_imbalance, -0.5, 0.5)
+
+    # --- HTF alignment features (4) ---
+    htf_trend, htf_rsi, htf_ms_dir, htf_ms_str = compute_htf_features(highs, lows, closes, n)
+    feat["htf_trend"] = htf_trend
+    feat["htf_rsi"] = htf_rsi
+    feat["htf_ms_direction"] = htf_ms_dir
+    feat["htf_ms_strength"] = htf_ms_str
+
     # Drop warmup
     drop_n = 30
     feat = feat.iloc[drop_n:].reset_index(drop=True)
@@ -368,7 +415,7 @@ def main():
 
     window = WINDOW_BY_TF.get(tf_key, 30)
     print(f"\nLoading model from {MODEL_FILE}... (window={window} for {tf_key})")
-    model = LiqRangeSFPClassifier(n_features=N_FEATURES, window=window, hidden=32).to(device)
+    model = LiqRangeSFPClassifier(n_features=N_FEATURES, window=window, hidden=48).to(device)
     model.load_state_dict(torch.load(MODEL_FILE, map_location=device, weights_only=True))
     print(f"  Model loaded ({sum(p.numel() for p in model.parameters()):,} params)")
 

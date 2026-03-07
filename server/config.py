@@ -11,12 +11,12 @@ ASSETS = {
 }
 
 N_CANDLES = 1000  # max per Binance API request
-BAR_CACHE_DIR = "cache/bars"
-BAR_CACHE_MAX = 5000  # max bars to keep per asset/TF
 WINDOW_BY_TF = {"15m": 120, "1h": 48, "4h": 30}
 WINDOW = max(WINDOW_BY_TF.values())  # 120, used as fallback/max
 SIGNAL_EXPIRY_BARS = 3
 SIGNAL_HORIZON = 18  # bars to track outcome (matches backtest)
+HORIZON_BY_TF = {"15m": 36, "1h": 18, "4h": 18}
+HIDDEN_DIM = 48
 
 TTP_TRAILING = {
     "early": {"max_ttp": 0.3, "trail_pct": 0.003},   # 0.3% trail
@@ -28,7 +28,7 @@ TTP_TRAILING = {
 MODEL_PATH = "best_model_liq_range_sfp.pth"
 SCALER_PATH = "liq_range_sfp_scaler.joblib"
 MODEL_CONFIDENCE = 0.3  # P(win) threshold
-N_FEATURES = 33
+N_FEATURES = 37
 
 LIVE_SIGNALS_PATH = "signals_live.json"
 
