@@ -39,22 +39,22 @@ TIMEFRAMES = {
         "interval": "15m",
         "tf_hours": 0.25,
         "tf_key": "15m",
-        # Run at :01, :16, :31, :46 UTC (1 min after candle close)
-        "cron": {"minute": "1,16,31,46"},
+        # Run every 5min
+        "cron": {"minute": "1,6,11,16,21,26,31,36,41,46,51,56"},
     },
     "1h": {
         "interval": "1h",
         "tf_hours": 1.0,
         "tf_key": "1h",
-        # Run every 10min to catch partial-candle SFPs early
-        "cron": {"minute": "1,11,21,31,41,51"},
+        # Run every 5min to catch partial-candle SFPs early
+        "cron": {"minute": "1,6,11,16,21,26,31,36,41,46,51,56"},
     },
     "4h": {
         "interval": "4h",
         "tf_hours": 4.0,
         "tf_key": "4h",
-        # Run every 10min to catch partial-candle SFPs early
-        "cron": {"minute": "1,11,21,31,41,51"},
+        # Run every 5min to catch partial-candle SFPs early
+        "cron": {"minute": "1,6,11,16,21,26,31,36,41,46,51,56"},
     },
 }
 
