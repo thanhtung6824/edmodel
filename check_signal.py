@@ -69,7 +69,7 @@ with open("recent_data.json") as f:
 rows = []
 for k in raw:
     rows.append({
-        "timestamp": pd.Timestamp(k[0], unit="ms", tz="UTC"),
+        "timestamp": pd.Timestamp(k[0], unit="ms", tz="UTC").tz_convert("Asia/Ho_Chi_Minh"),
         "Open": float(k[1]),
         "High": float(k[2]),
         "Low": float(k[3]),
@@ -140,7 +140,7 @@ for i in range(window - 1, len(feat_values)):
     sl_dist = out[4].item()
 
     orig_idx = drop_n + i
-    ts = df["timestamp"].iloc[orig_idx].tz_convert("Asia/Ho_Chi_Minh")
+    ts = df["timestamp"].iloc[orig_idx]
     entry = float(swept_trimmed[i])
     actual_mfe = float(mfe_trimmed[i])
     is_profitable = int(quality_trimmed[i]) == 1
@@ -184,9 +184,17 @@ for i in range(window - 1, len(feat_values)):
 
 # Dedup: group by (direction, sl_price_rounded, entry_rounded)
 # Keep the signal with highest P(win) per unique trade setup
+# Use adaptive rounding based on price magnitude
+def _round_decimals(price):
+    if price <= 0:
+        return 6
+    import math
+    return max(0, -int(math.floor(math.log10(price))) + 1)
+
 deduped = {}
 for s in all_signals:
-    key = (s["action"], round(s["entry"], 0), round(s["sl_price"], 0))
+    nd = _round_decimals(s["entry"])
+    key = (s["action"], round(s["entry"], nd), round(s["sl_price"], nd))
     if key not in deduped or s["p_win"] > deduped[key]["p_win"]:
         deduped[key] = s
 
@@ -194,6 +202,15 @@ signals = sorted(deduped.values(), key=lambda s: s["ts"])
 
 print(f"Signals after dedup: {len(signals)} (from {len(all_signals)} raw)")
 print()
+
+def _fmt_price(p):
+    """Format price with enough decimals for sub-penny coins."""
+    if p >= 1.0:
+        return f"${p:>9,.2f}"
+    elif p >= 0.01:
+        return f"${p:>9.4f}"
+    else:
+        return f"${p:>9.6f}"
 
 print(f"{'Timestamp':<26} {'Dir':>5} {'Entry':>10} | {'P(win)':>7} {'TP1%':>6} {'TP2%':>6} | {'TP1':>10} {'TP2':>10} {'SL':>10} | {'MFE%':>6} {'Result':>6} {'Pass?':>5}")
 print("-" * 130)
@@ -215,9 +232,9 @@ for s in signals:
             n_pass_lose += 1
 
     print(
-        f"  {s['ts']}  {direction:>5}  ${s['entry']:>9,.2f} |"
+        f"  {s['ts']}  {direction:>5}  {_fmt_price(s['entry'])} |"
         f" {s['p_win']:>6.3f}  {s['tp1_dist']*100:>5.2f}  {s['tp2_dist']*100:>5.2f} |"
-        f" ${s['tp1_price']:>9,.2f} ${s['tp2_price']:>9,.2f} ${s['sl_price']:>9,.2f} |"
+        f" {_fmt_price(s['tp1_price'])} {_fmt_price(s['tp2_price'])} {_fmt_price(s['sl_price'])} |"
         f" {s['mfe']*100:>5.2f}  {s['result']:>5} {marker:>5}"
     )
 
