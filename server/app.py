@@ -460,7 +460,8 @@ async def lifespan(app: FastAPI):
         for tf_key, cfg in TIMEFRAMES.items():
             job_id = f"{asset_key}_{tf_key}"
             trigger = CronTrigger(**cfg["cron"], timezone=timezone.utc)
-            scheduler.add_job(run_job, trigger, args=[asset_key, tf_key], id=job_id, name=f"sfp_{job_id}")
+            scheduler.add_job(run_job, trigger, args=[asset_key, tf_key], id=job_id, name=f"sfp_{job_id}",
+                              misfire_grace_time=300, jitter=30)
             logger.info(f"Scheduled {job_id} job: {cfg['cron']}")
 
     scheduler.start()
