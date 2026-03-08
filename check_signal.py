@@ -95,7 +95,7 @@ closes = df["Close"].values
 opens = df["Open"].values
 volumes_arr = df["Volume"].values if "Volume" in df.columns else None
 
-actions, quality, mfe, sl_labels, ttp_labels, swept_levels, signal_map, _mae = generate_labels(
+actions, quality, mfe, sl_labels, ttp_labels, swept_levels, signal_map, mae = generate_labels(
     highs, lows, closes, opens, volumes=volumes_arr, tf_key=tf_key,
 )
 
@@ -108,6 +108,7 @@ drop_n = 30
 swept_trimmed = swept_levels[drop_n:]
 quality_trimmed = quality[drop_n:]
 mfe_trimmed = mfe[drop_n:]
+mae_trimmed = mae[drop_n:]
 
 total_signals = int((actions_trimmed != 0).sum())
 print(f"Signals detected (raw): {total_signals}")
@@ -143,6 +144,7 @@ for i in range(window - 1, len(feat_values)):
     ts = df["timestamp"].iloc[orig_idx]
     entry = float(swept_trimmed[i])
     actual_mfe = float(mfe_trimmed[i])
+    actual_mae = float(mae_trimmed[i])
     is_profitable = int(quality_trimmed[i]) == 1
 
     # Model SL floored by candle extreme (same as server)
@@ -178,8 +180,9 @@ for i in range(window - 1, len(feat_values)):
         "p_win": p_win, "tp1_dist": tp1_dist, "tp2_dist": tp2_dist,
         "tp1_price": tp1_price, "tp2_price": tp2_price,
         "sl_price": sl_price, "sl_pct": sl_pct,
-        "mfe": actual_mfe, "result": result,
+        "mfe": actual_mfe, "mae": actual_mae, "result": result,
         "passed": p_win >= MODEL_CONFIDENCE,
+        "mae_hit_sl": actual_mae >= sl_pct,
     })
 
 # Dedup: group by (direction, sl_price_rounded, entry_rounded)
@@ -212,35 +215,55 @@ def _fmt_price(p):
     else:
         return f"${p:>9.6f}"
 
-print(f"{'Timestamp':<26} {'Dir':>5} {'Entry':>10} | {'P(win)':>7} {'TP1%':>6} {'TP2%':>6} | {'TP1':>10} {'TP2':>10} {'SL':>10} | {'MFE%':>6} {'Result':>6} {'Pass?':>5}")
-print("-" * 130)
+print(f"{'Timestamp':<26} {'Dir':>5} {'Entry':>10} | {'P(win)':>7} {'TP1%':>6} {'TP2%':>6} | {'TP1':>10} {'TP2':>10} {'SL':>10} | {'MFE%':>6} {'MAE%':>6} {'Result':>6} {'Pass?':>5}")
+print("-" * 140)
 
-n_win, n_lose, n_pass_win, n_pass_lose = 0, 0, 0, 0
+stats = {"all": {"w": 0, "l": 0}, "passed": {"w": 0, "l": 0}}
+for d in ("long", "short"):
+    stats[d] = {"w": 0, "l": 0}
+    stats[f"{d}_passed"] = {"w": 0, "l": 0}
+mae_hit_count, mae_hit_passed = 0, 0
+mae_total, mae_total_passed = 0, 0
+
 for s in signals:
     direction = "LONG" if s["action"] == 1 else "SHORT"
+    d_key = direction.lower()
     marker = "YES" if s["passed"] else "no"
     won = s["result"] != "SL"
+    wl = "w" if won else "l"
 
-    if won:
-        n_win += 1
-    else:
-        n_lose += 1
+    stats["all"][wl] += 1
+    stats[d_key][wl] += 1
+    mae_total += 1
+    if s["mae_hit_sl"]:
+        mae_hit_count += 1
     if s["passed"]:
-        if won:
-            n_pass_win += 1
-        else:
-            n_pass_lose += 1
+        stats["passed"][wl] += 1
+        stats[f"{d_key}_passed"][wl] += 1
+        mae_total_passed += 1
+        if s["mae_hit_sl"]:
+            mae_hit_passed += 1
 
     print(
         f"  {s['ts']}  {direction:>5}  {_fmt_price(s['entry'])} |"
         f" {s['p_win']:>6.3f}  {s['tp1_dist']*100:>5.2f}  {s['tp2_dist']*100:>5.2f} |"
         f" {_fmt_price(s['tp1_price'])} {_fmt_price(s['tp2_price'])} {_fmt_price(s['sl_price'])} |"
-        f" {s['mfe']*100:>5.2f}  {s['result']:>5} {marker:>5}"
+        f" {s['mfe']*100:>5.2f}  {s['mae']*100:>5.2f}  {s['result']:>5} {marker:>5}"
     )
 
-total = n_win + n_lose
-n_passed = n_pass_win + n_pass_lose
+def _wr(w, l):
+    t = w + l
+    return f"{w}W / {l}L = {w/max(t,1)*100:.0f}% WR ({t})" if t > 0 else "no trades"
+
 print()
-print(f"All signals: {n_win}W / {n_lose}L = {n_win/max(total,1)*100:.0f}% WR ({total} total)")
+print(f"All signals:    {_wr(stats['all']['w'], stats['all']['l'])}")
+print(f"  LONG:         {_wr(stats['long']['w'], stats['long']['l'])}")
+print(f"  SHORT:        {_wr(stats['short']['w'], stats['short']['l'])}")
+print(f"  MAE >= SL:    {mae_hit_count}/{mae_total} ({mae_hit_count/max(mae_total,1)*100:.0f}%)")
+print()
+n_passed = stats["passed"]["w"] + stats["passed"]["l"]
 if n_passed > 0:
-    print(f"Passed only: {n_pass_win}W / {n_pass_lose}L = {n_pass_win/max(n_passed,1)*100:.0f}% WR ({n_passed} total)")
+    print(f"Passed only:    {_wr(stats['passed']['w'], stats['passed']['l'])}")
+    print(f"  LONG:         {_wr(stats['long_passed']['w'], stats['long_passed']['l'])}")
+    print(f"  SHORT:        {_wr(stats['short_passed']['w'], stats['short_passed']['l'])}")
+    print(f"  MAE >= SL:    {mae_hit_passed}/{n_passed} ({mae_hit_passed/max(n_passed,1)*100:.0f}%)")
