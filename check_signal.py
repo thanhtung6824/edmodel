@@ -27,6 +27,25 @@ ASSETS = {
     "silver": 3.0,
     "sol": 4.0,
     "eth": 5.0,
+    "doge": 4.0,
+    "avax": 4.0,
+    "link": 4.0,
+    "arb": 4.0,
+    "sui": 4.0,
+    "tao": 4.0,
+    "ltc": 4.0,
+    "tia": 4.0,
+    "ondo": 4.0,
+    "aster": 4.0,
+    "sei": 4.0,
+    "aave": 4.0,
+    "bnb": 4.0,
+    "near": 4.0,
+    "op": 4.0,
+    "hype": 4.0,
+    "bch": 4.0,
+    "zro": 4.0,
+    "zec": 4.0,
 }
 
 TF_HOURS = {"15m": 0.25, "1h": 1.0, "4h": 4.0}
@@ -88,7 +107,6 @@ drop_n = 30
 swept_trimmed = swept_levels[drop_n:]
 quality_trimmed = quality[drop_n:]
 mfe_trimmed = mfe[drop_n:]
-sl_trimmed = sl_labels[drop_n:]
 
 total_signals = int((actions_trimmed != 0).sum())
 print(f"Signals detected (raw): {total_signals}")
@@ -118,21 +136,28 @@ for i in range(window - 1, len(feat_values)):
     p_win = torch.sigmoid(out[0]).item()
     tp1_dist = out[1].item()
     tp2_dist = out[2].item()
+    sl_dist = out[4].item()
 
-    ts = df["timestamp"].iloc[drop_n + i].tz_convert("Asia/Ho_Chi_Minh")
+    orig_idx = drop_n + i
+    ts = df["timestamp"].iloc[orig_idx].tz_convert("Asia/Ho_Chi_Minh")
     entry = float(swept_trimmed[i])
-    sl_pct = float(sl_trimmed[i])
     actual_mfe = float(mfe_trimmed[i])
     is_profitable = int(quality_trimmed[i]) == 1
 
+    # Model SL floored by candle extreme (same as server)
     if action == 1:  # LONG
         tp1_price = entry * (1 + tp1_dist)
         tp2_price = entry * (1 + tp2_dist)
-        sl_price = entry * (1 - sl_pct)
+        candle_sl = float(df["Low"].values[orig_idx])
+        model_sl = entry * (1 - sl_dist)
+        sl_price = min(candle_sl, model_sl)
     else:  # SHORT
         tp1_price = entry * (1 - tp1_dist)
         tp2_price = entry * (1 - tp2_dist)
-        sl_price = entry * (1 + sl_pct)
+        candle_sl = float(df["High"].values[orig_idx])
+        model_sl = entry * (1 + sl_dist)
+        sl_price = max(candle_sl, model_sl)
+    sl_pct = abs(sl_price - entry) / (entry + 1e-8)
 
     # Outcome: did MFE reach predicted TP?
     hit_tp1 = actual_mfe >= tp1_dist

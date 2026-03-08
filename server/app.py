@@ -632,7 +632,25 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       <button class="asset-btn" data-asset="eth">ETH</button>
       <button class="asset-btn" data-asset="sol">SOL</button>
       <button class="asset-btn" data-asset="gold">Gold</button>
-      <button class="asset-btn" data-asset="silver">Silver</button>
+      <button class="asset-btn" data-asset="doge">DOGE</button>
+      <button class="asset-btn" data-asset="avax">AVAX</button>
+      <button class="asset-btn" data-asset="link">LINK</button>
+      <button class="asset-btn" data-asset="arb">ARB</button>
+      <button class="asset-btn" data-asset="sui">SUI</button>
+      <button class="asset-btn" data-asset="tao">TAO</button>
+      <button class="asset-btn" data-asset="ltc">LTC</button>
+      <button class="asset-btn" data-asset="tia">TIA</button>
+      <button class="asset-btn" data-asset="ondo">ONDO</button>
+      <button class="asset-btn" data-asset="aster">ASTER</button>
+      <button class="asset-btn" data-asset="sei">SEI</button>
+      <button class="asset-btn" data-asset="aave">AAVE</button>
+      <button class="asset-btn" data-asset="bnb">BNB</button>
+      <button class="asset-btn" data-asset="near">NEAR</button>
+      <button class="asset-btn" data-asset="op">OP</button>
+      <button class="asset-btn" data-asset="hype">HYPE</button>
+      <button class="asset-btn" data-asset="bch">BCH</button>
+      <button class="asset-btn" data-asset="zro">ZRO</button>
+      <button class="asset-btn" data-asset="zec">ZEC</button>
       <span style="color:#30363d; margin:0 8px;">|</span>
       <button class="tf-btn active" data-tf="15m">15m</button>
       <button class="tf-btn" data-tf="1h">1h</button>

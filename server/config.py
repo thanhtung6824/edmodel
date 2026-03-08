@@ -8,6 +8,26 @@ ASSETS = {
     "silver": {"symbol": "XAGUSDT", "asset_id": 3.0, "active": False},
     "sol": {"symbol": "SOLUSDT", "asset_id": 4.0, "active": True},
     "eth": {"symbol": "ETHUSDT", "asset_id": 5.0, "active": True},
+    # Altcoins — use SOL's asset_id (same FiLM conditioning, no retrain needed)
+    "doge": {"symbol": "DOGEUSDT", "asset_id": 4.0, "active": True},
+    "avax": {"symbol": "AVAXUSDT", "asset_id": 4.0, "active": True},
+    "link": {"symbol": "LINKUSDT", "asset_id": 4.0, "active": True},
+    "arb": {"symbol": "ARBUSDT", "asset_id": 4.0, "active": True},
+    "sui": {"symbol": "SUIUSDT", "asset_id": 4.0, "active": True},
+    "tao": {"symbol": "TAOUSDT", "asset_id": 4.0, "active": True},
+    "ltc": {"symbol": "LTCUSDT", "asset_id": 4.0, "active": True},
+    "tia": {"symbol": "TIAUSDT", "asset_id": 4.0, "active": True},
+    "ondo": {"symbol": "ONDOUSDT", "asset_id": 4.0, "active": True},
+    "aster": {"symbol": "ASTERUSDT", "asset_id": 4.0, "active": True},
+    "sei": {"symbol": "SEIUSDT", "asset_id": 4.0, "active": True},
+    "aave": {"symbol": "AAVEUSDT", "asset_id": 4.0, "active": True},
+    "bnb": {"symbol": "BNBUSDT", "asset_id": 4.0, "active": True},
+    "near": {"symbol": "NEARUSDT", "asset_id": 4.0, "active": True},
+    "op": {"symbol": "OPUSDT", "asset_id": 4.0, "active": True},
+    "hype": {"symbol": "HYPEUSDT", "asset_id": 4.0, "active": True},
+    "bch": {"symbol": "BCHUSDT", "asset_id": 4.0, "active": True},
+    "zro": {"symbol": "ZROUSDT", "asset_id": 4.0, "active": True},
+    "zec": {"symbol": "ZECUSDT", "asset_id": 4.0, "active": True},
 }
 
 N_CANDLES = 1000  # max per Binance API request
