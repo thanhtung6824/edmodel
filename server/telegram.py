@@ -70,3 +70,89 @@ async def send_signal_alert(signal: dict):
         logger.info("Telegram notification sent")
     except Exception:
         logger.exception("Failed to send Telegram notification")
+
+
+async def send_trade_update(signal: dict, event_type: str):
+    """Send a Telegram notification for trade status changes."""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        logger.debug("Telegram not configured, skipping trade update")
+        return
+
+    direction = signal["direction"]
+    symbol = signal["symbol"]
+    tf = signal["timeframe"]
+    entry = signal["entry"]
+    header = f"{tf} {symbol} {direction}"
+
+    if event_type == "tp1_hit":
+        trail_pct = signal.get("trail_pct", 0.6)
+        tp1_price = signal.get("tp1_price", signal.get("tp_price"))
+        tp2_price = signal.get("tp2_price", signal.get("tp_price"))
+        tp1_pct = abs(tp1_price - entry) / (entry + 1e-8) * 100
+        text = (
+            f"\U0001f7e1 <b>TP1 Hit — {header}</b>\n"
+            f"\n"
+            f"Entry: <code>${entry:,.2f}</code>\n"
+            f"TP1: <code>${tp1_price:,.2f}</code> (+{tp1_pct:.1f}%) \u2705\n"
+            f"\u2192 Move SL to breakeven: <code>${entry:,.2f}</code>\n"
+            f"Trailing stop active ({trail_pct*100:.1f}%)\n"
+            f"Remaining target: TP2 <code>${tp2_price:,.2f}</code>"
+        )
+    elif event_type == "sl_hit":
+        sl_price = signal["sl_price"]
+        actual_r = signal.get("actual_r", -1.0)
+        text = (
+            f"\U0001f534 <b>Stop Loss — {header}</b>\n"
+            f"\n"
+            f"Entry: <code>${entry:,.2f}</code>\n"
+            f"SL: <code>${sl_price:,.2f}</code>\n"
+            f"Result: {actual_r:+.1f}R \u274c"
+        )
+    elif event_type == "tp2_hit":
+        tp2_price = signal.get("tp2_price", signal.get("tp_price"))
+        actual_r = signal.get("actual_r", 0)
+        text = (
+            f"\U0001f7e2 <b>TP2 Hit — {header}</b>\n"
+            f"\n"
+            f"Entry: <code>${entry:,.2f}</code>\n"
+            f"TP2: <code>${tp2_price:,.2f}</code> \u2705\n"
+            f"Result: {actual_r:+.1f}R \U0001f3c6"
+        )
+    elif event_type == "trail_stop":
+        exit_price = signal.get("exit_price", 0)
+        actual_r = signal.get("actual_r", 0)
+        text = (
+            f"\U0001f7e1 <b>Trail Stop — {header}</b>\n"
+            f"\n"
+            f"Entry: <code>${entry:,.2f}</code>\n"
+            f"Trailed at: <code>${exit_price:,.2f}</code>\n"
+            f"Result: {actual_r:+.1f}R \u2705"
+        )
+    elif event_type == "horizon_expired":
+        exit_price = signal.get("exit_price", 0)
+        actual_r = signal.get("actual_r", 0)
+        text = (
+            f"\u23f0 <b>Expired — {header}</b>\n"
+            f"\n"
+            f"Entry: <code>${entry:,.2f}</code>\n"
+            f"Closed at: <code>${exit_price:,.2f}</code>\n"
+            f"Result: {actual_r:+.1f}R"
+        )
+    else:
+        logger.warning(f"Unknown trade event type: {event_type}")
+        return
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": text,
+        "parse_mode": "HTML",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.post(url, json=payload)
+            resp.raise_for_status()
+        logger.info(f"Telegram trade update sent: {event_type}")
+    except Exception:
+        logger.exception(f"Failed to send Telegram trade update: {event_type}")

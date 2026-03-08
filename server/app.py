@@ -34,7 +34,7 @@ from server.pipeline import (
     build_liq_range_sfp_features,
     run_liq_range_sfp_detection,
 )
-from server.telegram import send_signal_alert
+from server.telegram import send_signal_alert, send_trade_update
 
 logging.basicConfig(
     level=logging.INFO,
@@ -79,15 +79,18 @@ def _get_trailing_pct(ttp: float) -> float:
         return TTP_TRAILING["late"]["trail_pct"]
 
 
-def _resolve_open_signals(job_key: str, candles: list[dict]):
+def _resolve_open_signals(job_key: str, candles: list[dict]) -> list[tuple[dict, str]]:
     """Check open/partial live signals against candle data to determine outcomes.
 
     Partial TP execution flow:
       open → TP1 hit → partial (trailing stop engages)
         → TP2 hit → win (0.5*TP1_R + 0.5*TP2_R)
         → trailing stop hit → partial_win (0.5*TP1_R + 0.5*trailing_R)
+
+    Returns list of (signal, event_type) pairs for notifications.
     """
     changed = False
+    events: list[tuple[dict, str]] = []
     for sig in live_signals:
         sig_key = f"{sig.get('asset', 'btc')}_{sig['timeframe']}"
         if sig_key != job_key:
@@ -118,13 +121,17 @@ def _resolve_open_signals(job_key: str, candles: list[dict]):
                         # Move SL to breakeven
                         sig["sl_price_original"] = sl_price
                         sig["sl_price"] = entry
+                        ttp = sig.get("ttp", 0.5)
+                        sig["trail_pct"] = _get_trailing_pct(ttp)
                         changed = True
+                        events.append((sig, "tp1_hit"))
                         break
                     if c["low"] <= sl_price:
                         sig["status"] = "loss"
                         sig["actual_r"] = -1.0
                         sig["resolved_at"] = c["time"]
                         changed = True
+                        events.append((sig, "sl_hit"))
                         break
                 else:
                     if c["low"] <= tp1_price:
@@ -132,13 +139,17 @@ def _resolve_open_signals(job_key: str, candles: list[dict]):
                         sig["partial_time"] = c["time"]
                         sig["sl_price_original"] = sl_price
                         sig["sl_price"] = entry
+                        ttp = sig.get("ttp", 0.5)
+                        sig["trail_pct"] = _get_trailing_pct(ttp)
                         changed = True
+                        events.append((sig, "tp1_hit"))
                         break
                     if c["high"] >= sl_price:
                         sig["status"] = "loss"
                         sig["actual_r"] = -1.0
                         sig["resolved_at"] = c["time"]
                         changed = True
+                        events.append((sig, "sl_hit"))
                         break
 
                 horizon = HORIZON_BY_TF.get(sig["timeframe"], SIGNAL_HORIZON)
@@ -151,7 +162,9 @@ def _resolve_open_signals(job_key: str, candles: list[dict]):
                     sig["status"] = "win" if pnl > 0 else "loss"
                     sig["actual_r"] = round(pnl, 2)
                     sig["resolved_at"] = c["time"]
+                    sig["exit_price"] = last_close
                     changed = True
+                    events.append((sig, "horizon_expired"))
                     break
 
         if sig["status"] == "partial":
@@ -190,6 +203,7 @@ def _resolve_open_signals(job_key: str, candles: list[dict]):
                         sig["actual_r"] = round(0.5 * tp1_r + 0.5 * tp2_r, 2)
                         sig["resolved_at"] = c["time"]
                         changed = True
+                        events.append((sig, "tp2_hit"))
                         break
                     if c["low"] <= trail_sl:
                         # Trailing stop hit
@@ -197,7 +211,9 @@ def _resolve_open_signals(job_key: str, candles: list[dict]):
                         sig["status"] = "partial_win"
                         sig["actual_r"] = round(0.5 * tp1_r + 0.5 * max(trailing_r, 0), 2)
                         sig["resolved_at"] = c["time"]
+                        sig["exit_price"] = round(trail_sl, 2)
                         changed = True
+                        events.append((sig, "trail_stop"))
                         break
                 else:
                     if c["low"] <= tp2_price:
@@ -206,6 +222,7 @@ def _resolve_open_signals(job_key: str, candles: list[dict]):
                         sig["actual_r"] = round(0.5 * tp1_r + 0.5 * tp2_r, 2)
                         sig["resolved_at"] = c["time"]
                         changed = True
+                        events.append((sig, "tp2_hit"))
                         break
                     if c["high"] >= trail_sl:
                         # Trailing stop hit
@@ -213,7 +230,9 @@ def _resolve_open_signals(job_key: str, candles: list[dict]):
                         sig["status"] = "partial_win"
                         sig["actual_r"] = round(0.5 * tp1_r + 0.5 * max(trailing_r, 0), 2)
                         sig["resolved_at"] = c["time"]
+                        sig["exit_price"] = round(trail_sl, 2)
                         changed = True
+                        events.append((sig, "trail_stop"))
                         break
 
                 horizon = HORIZON_BY_TF.get(sig["timeframe"], SIGNAL_HORIZON)
@@ -227,11 +246,15 @@ def _resolve_open_signals(job_key: str, candles: list[dict]):
                     sig["status"] = "partial_win"
                     sig["actual_r"] = round(0.5 * tp1_r + 0.5 * max(remaining_r, 0), 2)
                     sig["resolved_at"] = c["time"]
+                    sig["exit_price"] = last_close
                     changed = True
+                    events.append((sig, "horizon_expired"))
                     break
 
     if changed:
         _save_live_signals()
+
+    return events
 
 
 async def run_job(asset_key: str, tf_key: str):
@@ -260,7 +283,9 @@ async def run_job(asset_key: str, tf_key: str):
         ]
         candle_store[job_key] = candles
 
-        _resolve_open_signals(job_key, candles)
+        events = _resolve_open_signals(job_key, candles)
+        for sig, event_type in events:
+            await send_trade_update(sig, event_type)
 
         signaled_times = {
             s["time"]
