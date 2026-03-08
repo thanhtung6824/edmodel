@@ -284,8 +284,13 @@ async def run_job(asset_key: str, tf_key: str):
         candle_store[job_key] = candles
 
         events = _resolve_open_signals(job_key, candles)
+        prev_bar = last_bar_time.get(job_key)
         for sig, event_type in events:
-            await send_trade_update(sig, event_type)
+            # Only notify for events on new candles (skip historical resolutions on startup)
+            if prev_bar is not None:
+                event_time = sig.get("resolved_at") or sig.get("partial_time")
+                if event_time is not None and event_time >= prev_bar:
+                    await send_trade_update(sig, event_type)
 
         signaled_times = {
             s["time"]
