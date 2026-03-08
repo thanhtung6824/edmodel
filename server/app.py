@@ -286,7 +286,9 @@ async def run_job(asset_key: str, tf_key: str):
         events = _resolve_open_signals(job_key, candles)
         prev_bar = last_bar_time.get(job_key)
         for sig, event_type in events:
-            # Only notify for events on new candles (skip historical resolutions on startup)
+            # Only notify for signals the user was alerted about, on new candles
+            if not sig.get("alerted"):
+                continue
             if prev_bar is not None:
                 event_time = sig.get("resolved_at") or sig.get("partial_time")
                 if event_time is not None and event_time >= prev_bar:
@@ -412,6 +414,7 @@ async def run_job(asset_key: str, tf_key: str):
                     "status": "open",
                     "actual_r": None,
                     "resolved_at": None,
+                    "alerted": bars_ago < SIGNAL_EXPIRY_BARS,
                 }
                 active_signals.append(signal)
                 live_signals.append(signal)
@@ -419,7 +422,7 @@ async def run_job(asset_key: str, tf_key: str):
                 new_signals += 1
                 logger.info(f"[{job_key}] SIGNAL: {direction} @ {entry:.2f} (P(win)={p_win:.2f}, TP1={tp1_pct:.2f}% TP2={tp2_pct:.2f}%, best={best_label} R:R={ratio:.2f}, bar -{bars_ago})")
 
-                if bars_ago < SIGNAL_EXPIRY_BARS:
+                if signal["alerted"]:
                     await send_signal_alert(signal)
 
             if n_scored > 0:
