@@ -22,6 +22,7 @@ from server.config import (
     MODEL_PATH,
     N_CANDLES,
     SCALER_PATH,
+    SIGNAL_ALERT_MAX_BARS,
     SIGNAL_EXPIRY_BARS,
     SIGNAL_HORIZON,
     TIMEFRAMES,
@@ -414,7 +415,7 @@ async def run_job(asset_key: str, tf_key: str):
                     "status": "open",
                     "actual_r": None,
                     "resolved_at": None,
-                    "alerted": bars_ago < SIGNAL_EXPIRY_BARS,
+                    "alerted": bars_ago < SIGNAL_ALERT_MAX_BARS,
                 }
                 active_signals.append(signal)
                 live_signals.append(signal)
