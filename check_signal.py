@@ -43,6 +43,7 @@ ASSETS = {
     "near": 4.0,
     "op": 4.0,
     "hype": 4.0,
+    "pump": 4.0,
     "bch": 4.0,
     "zro": 4.0,
     "zec": 4.0,

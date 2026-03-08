@@ -13,13 +13,17 @@ MAX_RETRIES = 3
 RETRY_DELAY = 5  # seconds
 
 
-async def fetch_candles(symbol: str, interval: str, limit: int = 500) -> pd.DataFrame:
+async def fetch_candles(symbol: str, interval: str, limit: int = 500, futures: bool = False) -> pd.DataFrame:
     """Fetch klines from Binance and return DataFrame with indicators.
 
     Retries up to 3 times on connection/timeout errors.
     Indicators match data/re_sample.py exactly.
+    Uses Futures API (/fapi) when futures=True (e.g. HYPEUSDT).
     """
-    url = "https://api.binance.com/api/v3/klines"
+    if futures:
+        url = "https://fapi.binance.com/fapi/v1/klines"
+    else:
+        url = "https://api.binance.com/api/v3/klines"
     params = {"symbol": symbol, "interval": interval, "limit": limit}
 
     for attempt in range(1, MAX_RETRIES + 1):

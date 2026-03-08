@@ -244,7 +244,7 @@ async def run_job(asset_key: str, tf_key: str):
     logger.info(f"[{job_key}] Job started ({symbol})")
 
     try:
-        df = await fetch_candles(symbol, cfg["interval"], limit=N_CANDLES)
+        df = await fetch_candles(symbol, cfg["interval"], limit=N_CANDLES, futures=asset_cfg.get("futures", False))
         logger.info(f"[{job_key}] Fetched {len(df)} candles")
 
         # Store candle data for chart endpoint
@@ -648,6 +648,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       <button class="asset-btn" data-asset="near">NEAR</button>
       <button class="asset-btn" data-asset="op">OP</button>
       <button class="asset-btn" data-asset="hype">HYPE</button>
+      <button class="asset-btn" data-asset="pump">PUMP</button>
       <button class="asset-btn" data-asset="bch">BCH</button>
       <button class="asset-btn" data-asset="zro">ZRO</button>
       <button class="asset-btn" data-asset="zec">ZEC</button>
