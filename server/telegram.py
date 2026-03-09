@@ -9,6 +9,16 @@ from server.config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 logger = logging.getLogger(__name__)
 
 
+def _fmt(price: float) -> str:
+    """Format price with enough decimals for sub-penny coins."""
+    if price >= 1.0:
+        return f"${price:,.2f}"
+    elif price >= 0.01:
+        return f"${price:.4f}"
+    else:
+        return f"${price:.6f}"
+
+
 async def send_signal_alert(signal: dict):
     """Send a Telegram message when a new signal fires."""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
@@ -33,24 +43,24 @@ async def send_signal_alert(signal: dict):
         ratio = signal.get("ratio", 0)
 
         tp_lines = (
-            f"TP1: <code>${tp1_price:,.2f}</code> (+{tp1_pct}%)\n"
-            f"TP2: <code>${tp2_price:,.2f}</code> (+{tp2_pct}%)"
+            f"TP1: <code>{_fmt(tp1_price)}</code> (+{tp1_pct}%)\n"
+            f"TP2: <code>{_fmt(tp2_price)}</code> (+{tp2_pct}%)"
         )
         quality_line = f"P(win): <b>{confidence:.0%}</b> | R:R: <b>{ratio:.1f}:1</b> ({best_tp})"
     else:
         # Legacy single-TP format
         tp_price = signal["tp_price"]
         tp_pct = signal["tp_pct"]
-        tp_lines = f"TP: <code>${tp_price:,.2f}</code> (+{tp_pct}%)"
+        tp_lines = f"TP: <code>{_fmt(tp_price)}</code> (+{tp_pct}%)"
         quality_line = f"Ratio: <b>{signal.get('ratio', 0)}</b>"
 
     text = (
         f"{emoji} <b>{strategy} Signal — {signal['timeframe']} {signal['symbol']}</b>\n"
         f"\n"
         f"Direction: <b>{direction}</b>\n"
-        f"Entry: <code>${entry:,.2f}</code>\n"
+        f"Entry: <code>{_fmt(entry)}</code>\n"
         f"{tp_lines}\n"
-        f"SL: <code>${sl_price:,.2f}</code> (-{sl_pct}%)\n"
+        f"SL: <code>{_fmt(sl_price)}</code> (-{sl_pct}%)\n"
         f"{quality_line}\n"
         f"\n"
         f"Bars remaining: {signal['bars_remaining']}"
@@ -92,11 +102,11 @@ async def send_trade_update(signal: dict, event_type: str):
         text = (
             f"\U0001f7e1 <b>TP1 Hit — {header}</b>\n"
             f"\n"
-            f"Entry: <code>${entry:,.2f}</code>\n"
-            f"TP1: <code>${tp1_price:,.2f}</code> (+{tp1_pct:.1f}%) \u2705\n"
-            f"\u2192 Move SL to breakeven: <code>${entry:,.2f}</code>\n"
+            f"Entry: <code>{_fmt(entry)}</code>\n"
+            f"TP1: <code>{_fmt(tp1_price)}</code> (+{tp1_pct:.1f}%) \u2705\n"
+            f"\u2192 Move SL to breakeven: <code>{_fmt(entry)}</code>\n"
             f"Trailing stop active ({trail_pct*100:.1f}%)\n"
-            f"Remaining target: TP2 <code>${tp2_price:,.2f}</code>"
+            f"Remaining target: TP2 <code>{_fmt(tp2_price)}</code>"
         )
     elif event_type == "sl_hit":
         sl_price = signal["sl_price"]
@@ -104,8 +114,8 @@ async def send_trade_update(signal: dict, event_type: str):
         text = (
             f"\U0001f534 <b>Stop Loss — {header}</b>\n"
             f"\n"
-            f"Entry: <code>${entry:,.2f}</code>\n"
-            f"SL: <code>${sl_price:,.2f}</code>\n"
+            f"Entry: <code>{_fmt(entry)}</code>\n"
+            f"SL: <code>{_fmt(sl_price)}</code>\n"
             f"Result: {actual_r:+.1f}R \u274c"
         )
     elif event_type == "tp2_hit":
@@ -114,8 +124,8 @@ async def send_trade_update(signal: dict, event_type: str):
         text = (
             f"\U0001f7e2 <b>TP2 Hit — {header}</b>\n"
             f"\n"
-            f"Entry: <code>${entry:,.2f}</code>\n"
-            f"TP2: <code>${tp2_price:,.2f}</code> \u2705\n"
+            f"Entry: <code>{_fmt(entry)}</code>\n"
+            f"TP2: <code>{_fmt(tp2_price)}</code> \u2705\n"
             f"Result: {actual_r:+.1f}R \U0001f3c6"
         )
     elif event_type == "trail_stop":
@@ -124,8 +134,8 @@ async def send_trade_update(signal: dict, event_type: str):
         text = (
             f"\U0001f7e1 <b>Trail Stop — {header}</b>\n"
             f"\n"
-            f"Entry: <code>${entry:,.2f}</code>\n"
-            f"Trailed at: <code>${exit_price:,.2f}</code>\n"
+            f"Entry: <code>{_fmt(entry)}</code>\n"
+            f"Trailed at: <code>{_fmt(exit_price)}</code>\n"
             f"Result: {actual_r:+.1f}R \u2705"
         )
     elif event_type == "horizon_expired":
@@ -134,8 +144,8 @@ async def send_trade_update(signal: dict, event_type: str):
         text = (
             f"\u23f0 <b>Expired — {header}</b>\n"
             f"\n"
-            f"Entry: <code>${entry:,.2f}</code>\n"
-            f"Closed at: <code>${exit_price:,.2f}</code>\n"
+            f"Entry: <code>{_fmt(entry)}</code>\n"
+            f"Closed at: <code>{_fmt(exit_price)}</code>\n"
             f"Result: {actual_r:+.1f}R"
         )
     else:

@@ -388,6 +388,8 @@ async def run_job(asset_key: str, tf_key: str):
 
                 remaining = max(SIGNAL_EXPIRY_BARS - bars_ago, 0)
 
+                # Adaptive rounding for sub-penny coins
+                _nd = max(2, -int(__import__('math').floor(__import__('math').log10(entry + 1e-10))) + 2)
                 signal = {
                     "strategy": "Liq+Range+SFP",
                     "timeframe": tf_key,
@@ -396,16 +398,16 @@ async def run_job(asset_key: str, tf_key: str):
                     "time": bar_time,
                     "symbol": symbol,
                     "direction": direction,
-                    "entry": round(entry, 2),
-                    "tp1_price": round(tp1_price, 2),
-                    "tp2_price": round(tp2_price, 2),
+                    "entry": round(entry, _nd),
+                    "tp1_price": round(tp1_price, _nd),
+                    "tp2_price": round(tp2_price, _nd),
                     "tp1_pct": round(tp1_pct, 2),
                     "tp2_pct": round(tp2_pct, 2),
                     "tp1_conf": round(p_win, 3),
                     "tp2_conf": round(p_win, 3),
-                    "tp_price": round(best_tp_price, 2),
+                    "tp_price": round(best_tp_price, _nd),
                     "tp_pct": round(best_tp_pct, 2),
-                    "sl_price": round(sl_price, 2),
+                    "sl_price": round(sl_price, _nd),
                     "sl_pct": round(sl_pct, 2),
                     "ratio": round(ratio, 4),
                     "confidence": round(p_win, 3),
