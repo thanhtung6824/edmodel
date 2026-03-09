@@ -49,7 +49,7 @@ TTP_TRAILING = {
 # Liq+Range+SFP model
 MODEL_PATH = "best_model_liq_range_sfp.pth"
 SCALER_PATH = "liq_range_sfp_scaler.joblib"
-MODEL_CONFIDENCE = 0.3  # P(win) threshold
+MODEL_CONFIDENCE = 0.5  # P(win) threshold
 N_FEATURES = 27
 ENSEMBLE_MODEL_PATTERN = "best_model_liq_range_sfp_*.pth"
 
@@ -70,7 +70,6 @@ HISTORY_FILES = {
 
 # Timeframe configs
 TIMEFRAMES = {
-    "15m": {"interval": "15m", "tf_hours": 0.25, "tf_key": "15m"},
     "1h":  {"interval": "1h",  "tf_hours": 1.0,  "tf_key": "1h"},
     "4h":  {"interval": "4h",  "tf_hours": 4.0,  "tf_key": "4h"},
 }
