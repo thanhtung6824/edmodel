@@ -16,7 +16,8 @@ import numpy as np
 import pandas as pd
 import torch
 from ta import volume, volatility, trend, momentum
-from src.labels.liq_sfp_labels import generate_labels
+from src.labels.liq_sfp_labels import generate_labels, HORIZON_MAP
+from src.labels.range_sfp_labels import compute_range_tp_sl_labels
 from server.pipeline import build_liq_range_sfp_features
 from server.inference import load_model, load_scaler
 from server.config import MODEL_PATH, SCALER_PATH, WINDOW_BY_TF, MODEL_CONFIDENCE
@@ -49,7 +50,7 @@ ASSETS = {
     "zec": 4.0,
 }
 
-TF_HOURS = {"15m": 0.25, "1h": 1.0, "4h": 4.0}
+TF_HOURS = {"1h": 1.0, "4h": 4.0}
 
 args = sys.argv[1:]
 asset_name = "btc"
@@ -95,8 +96,15 @@ closes = df["Close"].values
 opens = df["Open"].values
 volumes_arr = df["Volume"].values if "Volume" in df.columns else None
 
-actions, quality, mfe, sl_labels, ttp_labels, swept_levels, signal_map, mae = generate_labels(
-    highs, lows, closes, opens, volumes=volumes_arr, tf_key=tf_key,
+actions, _, _, _, _, swept_levels, signal_map, _ = generate_labels(
+    highs, lows, closes, opens, volumes=volumes_arr, tf_key=tf_key, detection_only=True,
+)
+
+# Compute outcome labels on a copy (compute_range_tp_sl_labels zeros recent signals)
+actions_for_labels = actions.copy()
+horizon = HORIZON_MAP.get(tf_key, 18)
+quality, mfe, sl_labels, ttp_labels, mae = compute_range_tp_sl_labels(
+    highs, lows, closes, actions_for_labels, swept_levels, signal_map, horizon=horizon,
 )
 
 # Build features
@@ -145,7 +153,8 @@ for i in range(window - 1, len(feat_values)):
     entry = float(swept_trimmed[i])
     actual_mfe = float(mfe_trimmed[i])
     actual_mae = float(mae_trimmed[i])
-    is_profitable = int(quality_trimmed[i]) == 1
+    has_outcome = int(actions_for_labels[orig_idx]) != 0  # False for recent bars
+    is_profitable = int(quality_trimmed[i]) == 1 if has_outcome else False
 
     # Model SL floored by candle extreme (same as server)
     if action == 1:  # LONG
@@ -163,17 +172,19 @@ for i in range(window - 1, len(feat_values)):
     sl_pct = abs(sl_price - entry) / (entry + 1e-8)
 
     # Outcome: did MFE reach predicted TP?
-    hit_tp1 = actual_mfe >= tp1_dist
-    hit_tp2 = actual_mfe >= tp2_dist
-
-    if hit_tp2:
-        result = "TP2"
-    elif hit_tp1:
-        result = "TP1"
-    elif is_profitable:
-        result = "MFE+"
+    if has_outcome:
+        hit_tp1 = actual_mfe >= tp1_dist
+        hit_tp2 = actual_mfe >= tp2_dist
+        if hit_tp2:
+            result = "TP2"
+        elif hit_tp1:
+            result = "TP1"
+        elif is_profitable:
+            result = "MFE+"
+        else:
+            result = "SL"
     else:
-        result = "SL"
+        result = "OPEN"
 
     all_signals.append({
         "ts": ts, "action": action, "entry": entry,
@@ -182,7 +193,8 @@ for i in range(window - 1, len(feat_values)):
         "sl_price": sl_price, "sl_pct": sl_pct,
         "mfe": actual_mfe, "mae": actual_mae, "result": result,
         "passed": p_win >= MODEL_CONFIDENCE,
-        "mae_hit_sl": actual_mae >= sl_pct,
+        "mae_hit_sl": actual_mae >= sl_pct if has_outcome else False,
+        "has_outcome": has_outcome,
     })
 
 # Dedup: group by (direction, sl_price_rounded, entry_rounded)
@@ -224,11 +236,23 @@ for d in ("long", "short"):
     stats[f"{d}_passed"] = {"w": 0, "l": 0}
 mae_hit_count, mae_hit_passed = 0, 0
 mae_total, mae_total_passed = 0, 0
+n_open = 0
 
 for s in signals:
     direction = "LONG" if s["action"] == 1 else "SHORT"
     d_key = direction.lower()
     marker = "YES" if s["passed"] else "no"
+
+    if not s["has_outcome"]:
+        n_open += 1
+        print(
+            f"  {s['ts']}  {direction:>5}  {_fmt_price(s['entry'])} |"
+            f" {s['p_win']:>6.3f}  {s['tp1_dist']*100:>5.2f}  {s['tp2_dist']*100:>5.2f} |"
+            f" {_fmt_price(s['tp1_price'])} {_fmt_price(s['tp2_price'])} {_fmt_price(s['sl_price'])} |"
+            f"    --     --   OPEN {marker:>5}"
+        )
+        continue
+
     won = s["result"] != "SL"
     wl = "w" if won else "l"
 
@@ -256,6 +280,8 @@ def _wr(w, l):
     return f"{w}W / {l}L = {w/max(t,1)*100:.0f}% WR ({t})" if t > 0 else "no trades"
 
 print()
+if n_open > 0:
+    print(f"Open (no outcome yet): {n_open}")
 print(f"All signals:    {_wr(stats['all']['w'], stats['all']['l'])}")
 print(f"  LONG:         {_wr(stats['long']['w'], stats['long']['l'])}")
 print(f"  SHORT:        {_wr(stats['short']['w'], stats['short']['l'])}")
