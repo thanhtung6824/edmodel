@@ -15,16 +15,13 @@ from server.config import (
     ASSETS,
     ENSEMBLE_MODEL_PATTERN,
     HISTORY_FILES,
-    HORIZON_BY_TF,
     LIVE_SIGNALS_PATH,
     MODEL_CONFIDENCE,
     MODEL_PATH,
     SCALER_PATH,
     SIGNAL_ALERT_MAX_BARS,
     SIGNAL_EXPIRY_BARS,
-    SIGNAL_HORIZON,
     TIMEFRAMES,
-    TTP_TRAILING,
     WINDOW,
     WINDOW_BY_TF,
     WS_MID_CANDLE_INTERVAL,
@@ -34,7 +31,7 @@ from server.pipeline import (
     build_liq_range_sfp_features,
     run_liq_range_sfp_detection,
 )
-from server.telegram import send_signal_alert, send_trade_update
+from server.telegram import send_signal_alert
 
 logging.basicConfig(
     level=logging.INFO,
@@ -69,194 +66,6 @@ def _save_live_signals():
     Path(LIVE_SIGNALS_PATH).write_text(json.dumps(live_signals, indent=2))
 
 
-def _get_trailing_pct(ttp: float) -> float:
-    """Map model TTP prediction to trailing stop percentage."""
-    if ttp <= TTP_TRAILING["early"]["max_ttp"]:
-        return TTP_TRAILING["early"]["trail_pct"]
-    elif ttp <= TTP_TRAILING["mid"]["max_ttp"]:
-        return TTP_TRAILING["mid"]["trail_pct"]
-    else:
-        return TTP_TRAILING["late"]["trail_pct"]
-
-
-def _resolve_open_signals(job_key: str, candles: list[dict]) -> list[tuple[dict, str]]:
-    """Check open/partial live signals against candle data to determine outcomes.
-
-    Partial TP execution flow:
-      open → TP1 hit → partial (trailing stop engages)
-        → TP2 hit → win (0.5*TP1_R + 0.5*TP2_R)
-        → trailing stop hit → partial_win (0.5*TP1_R + 0.5*trailing_R)
-
-    Returns list of (signal, event_type) pairs for notifications.
-    """
-    changed = False
-    events: list[tuple[dict, str]] = []
-    for sig in live_signals:
-        sig_key = f"{sig.get('asset', 'btc')}_{sig['timeframe']}"
-        if sig_key != job_key:
-            continue
-        if sig["status"] not in ("open", "partial"):
-            continue
-
-        entry = sig["entry"]
-        tp1_price = sig.get("tp1_price", sig["tp_price"])
-        tp2_price = sig.get("tp2_price", sig["tp_price"])
-        sl_price = sig["sl_price"]
-        sig_time = sig["time"]
-        is_long = sig["direction"] == "LONG"
-
-        if sig["status"] == "open":
-            # Phase 1: Check for TP1 hit or SL hit
-            bars_after = 0
-            for c in candles:
-                if c["time"] <= sig_time:
-                    continue
-                bars_after += 1
-
-                if is_long:
-                    # Check TP1 first (partial fill)
-                    if c["high"] >= tp1_price:
-                        sig["status"] = "partial"
-                        sig["partial_time"] = c["time"]
-                        # Move SL to breakeven
-                        sig["sl_price_original"] = sl_price
-                        sig["sl_price"] = entry
-                        ttp = sig.get("ttp", 0.5)
-                        sig["trail_pct"] = _get_trailing_pct(ttp)
-                        changed = True
-                        events.append((sig, "tp1_hit"))
-                        break
-                    if c["low"] <= sl_price:
-                        sig["status"] = "loss"
-                        sig["actual_r"] = -1.0
-                        sig["resolved_at"] = c["time"]
-                        changed = True
-                        events.append((sig, "sl_hit"))
-                        break
-                else:
-                    if c["low"] <= tp1_price:
-                        sig["status"] = "partial"
-                        sig["partial_time"] = c["time"]
-                        sig["sl_price_original"] = sl_price
-                        sig["sl_price"] = entry
-                        ttp = sig.get("ttp", 0.5)
-                        sig["trail_pct"] = _get_trailing_pct(ttp)
-                        changed = True
-                        events.append((sig, "tp1_hit"))
-                        break
-                    if c["high"] >= sl_price:
-                        sig["status"] = "loss"
-                        sig["actual_r"] = -1.0
-                        sig["resolved_at"] = c["time"]
-                        changed = True
-                        events.append((sig, "sl_hit"))
-                        break
-
-                horizon = HORIZON_BY_TF.get(sig["timeframe"], SIGNAL_HORIZON)
-                if bars_after >= horizon:
-                    last_close = c["close"]
-                    if is_long:
-                        pnl = (last_close - entry) / (entry - sl_price + 1e-8)
-                    else:
-                        pnl = (entry - last_close) / (sl_price - entry + 1e-8)
-                    sig["status"] = "win" if pnl > 0 else "loss"
-                    sig["actual_r"] = round(pnl, 2)
-                    sig["resolved_at"] = c["time"]
-                    sig["exit_price"] = last_close
-                    changed = True
-                    events.append((sig, "horizon_expired"))
-                    break
-
-        if sig["status"] == "partial":
-            # Phase 2: TP1 already hit, trailing stop engages. Check TP2 or trail stop.
-            partial_time = sig.get("partial_time", sig_time)
-            sl_original = sig.get("sl_price_original", sl_price)
-            tp1_r = abs(tp1_price - entry) / (abs(entry - sl_original) + 1e-8)
-            ttp = sig.get("ttp", 0.5)
-            trail_pct = _get_trailing_pct(ttp)
-            best_price = sig.get("best_price", entry)
-            bars_after = 0
-
-            for c in candles:
-                if c["time"] <= partial_time:
-                    continue
-                bars_after += 1
-
-                # Update best price
-                if is_long:
-                    best_price = max(best_price, c["high"])
-                else:
-                    best_price = min(best_price, c["low"])
-                sig["best_price"] = best_price
-
-                # Compute trailing SL
-                if is_long:
-                    trail_sl = best_price * (1 - trail_pct)
-                else:
-                    trail_sl = best_price * (1 + trail_pct)
-
-                if is_long:
-                    if c["high"] >= tp2_price:
-                        # Full TP2 hit: 0.5 * TP1_R + 0.5 * TP2_R
-                        tp2_r = (tp2_price - entry) / (entry - sl_original + 1e-8)
-                        sig["status"] = "win"
-                        sig["actual_r"] = round(0.5 * tp1_r + 0.5 * tp2_r, 2)
-                        sig["resolved_at"] = c["time"]
-                        changed = True
-                        events.append((sig, "tp2_hit"))
-                        break
-                    if c["low"] <= trail_sl:
-                        # Trailing stop hit
-                        trailing_r = (trail_sl - entry) / (entry - sl_original + 1e-8)
-                        sig["status"] = "partial_win"
-                        sig["actual_r"] = round(0.5 * tp1_r + 0.5 * max(trailing_r, 0), 2)
-                        sig["resolved_at"] = c["time"]
-                        sig["exit_price"] = round(trail_sl, 2)
-                        changed = True
-                        events.append((sig, "trail_stop"))
-                        break
-                else:
-                    if c["low"] <= tp2_price:
-                        tp2_r = (entry - tp2_price) / (sl_original - entry + 1e-8)
-                        sig["status"] = "win"
-                        sig["actual_r"] = round(0.5 * tp1_r + 0.5 * tp2_r, 2)
-                        sig["resolved_at"] = c["time"]
-                        changed = True
-                        events.append((sig, "tp2_hit"))
-                        break
-                    if c["high"] >= trail_sl:
-                        # Trailing stop hit
-                        trailing_r = (entry - trail_sl) / (sl_original - entry + 1e-8)
-                        sig["status"] = "partial_win"
-                        sig["actual_r"] = round(0.5 * tp1_r + 0.5 * max(trailing_r, 0), 2)
-                        sig["resolved_at"] = c["time"]
-                        sig["exit_price"] = round(trail_sl, 2)
-                        changed = True
-                        events.append((sig, "trail_stop"))
-                        break
-
-                horizon = HORIZON_BY_TF.get(sig["timeframe"], SIGNAL_HORIZON)
-                if bars_after >= horizon:
-                    # Expired after partial — close at market, count partial TP1 + remaining P&L
-                    last_close = c["close"]
-                    if is_long:
-                        remaining_r = (last_close - entry) / (entry - sl_original + 1e-8)
-                    else:
-                        remaining_r = (entry - last_close) / (sl_original - entry + 1e-8)
-                    sig["status"] = "partial_win"
-                    sig["actual_r"] = round(0.5 * tp1_r + 0.5 * max(remaining_r, 0), 2)
-                    sig["resolved_at"] = c["time"]
-                    sig["exit_price"] = last_close
-                    changed = True
-                    events.append((sig, "horizon_expired"))
-                    break
-
-    if changed:
-        _save_live_signals()
-
-    return events
-
-
 async def process_signal(asset_key: str, tf_key: str, df, *, verbose: bool = True):
     """Core pipeline: detect signals, run inference, store results.
 
@@ -282,17 +91,6 @@ async def process_signal(asset_key: str, tf_key: str, df, *, verbose: bool = Tru
             for _, row in df.iterrows()
         ]
         candle_store[job_key] = candles
-
-        events = _resolve_open_signals(job_key, candles)
-        prev_bar = last_bar_time.get(job_key)
-        for sig, event_type in events:
-            # Only notify for signals the user was alerted about, on new candles
-            if not sig.get("alerted"):
-                continue
-            if prev_bar is not None:
-                event_time = sig.get("resolved_at") or sig.get("partial_time")
-                if event_time is not None and event_time >= prev_bar:
-                    await send_trade_update(sig, event_type)
 
         signaled_times = {
             s["time"]
