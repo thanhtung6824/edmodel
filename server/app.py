@@ -1,17 +1,16 @@
-"""FastAPI signal server with APScheduler for live Liq+Range+SFP detection."""
+"""FastAPI signal server with Binance WebSocket streaming for live Liq+Range+SFP detection."""
 
+import asyncio
 import json
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.cron import CronTrigger
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 
-from server.binance import fetch_candles
+from server.binance import BinanceStreamManager
 from server.config import (
     ASSETS,
     ENSEMBLE_MODEL_PATTERN,
@@ -20,7 +19,6 @@ from server.config import (
     LIVE_SIGNALS_PATH,
     MODEL_CONFIDENCE,
     MODEL_PATH,
-    N_CANDLES,
     SCALER_PATH,
     SIGNAL_ALERT_MAX_BARS,
     SIGNAL_EXPIRY_BARS,
@@ -29,6 +27,7 @@ from server.config import (
     TTP_TRAILING,
     WINDOW,
     WINDOW_BY_TF,
+    WS_MID_CANDLE_INTERVAL,
 )
 from server.inference import load_ensemble, load_model, load_scaler, predict_bar, predict_bar_ensemble
 from server.pipeline import (
@@ -47,11 +46,11 @@ logger = logging.getLogger(__name__)
 # In-memory stores
 active_signals: list[dict] = []  # signals with bars_remaining > 0
 live_signals: list[dict] = []  # all live signals (persisted to JSON)
-candle_store: dict[str, list[dict]] = {}  # tf_key -> [{time, open, high, low, close}, ...]
+candle_store: dict[str, list[dict]] = {}  # job_key -> [{time, open, high, low, close}, ...]
 model = None
 ensemble_models: list = []  # ensemble of models (if available)
 scaler = None
-scheduler = AsyncIOScheduler(timezone=timezone.utc)
+stream_mgr: BinanceStreamManager | None = None
 last_run: dict[str, str] = {}
 last_bar_time: dict[str, int] = {}  # job_key -> latest candle timestamp
 
@@ -258,19 +257,19 @@ def _resolve_open_signals(job_key: str, candles: list[dict]) -> list[tuple[dict,
     return events
 
 
-async def run_job(asset_key: str, tf_key: str):
-    """Scheduled job: fetch candles, run Liq+Range+SFP pipeline, store signals."""
+async def process_signal(asset_key: str, tf_key: str, df, *, verbose: bool = True):
+    """Core pipeline: detect signals, run inference, store results.
+
+    Called on candle close (from WS) and every WS_MID_CANDLE_INTERVAL seconds
+    for mid-candle SFP detection. Replaces the old APScheduler run_job().
+    """
     asset_cfg = ASSETS[asset_key]
     symbol = asset_cfg["symbol"]
     asset_id = asset_cfg["asset_id"]
     cfg = TIMEFRAMES[tf_key]
     job_key = f"{asset_key}_{tf_key}"
-    logger.info(f"[{job_key}] Job started ({symbol})")
 
     try:
-        df = await fetch_candles(symbol, cfg["interval"], limit=N_CANDLES, futures=asset_cfg.get("futures", False))
-        logger.info(f"[{job_key}] Fetched {len(df)} candles")
-
         # Store candle data for chart endpoint
         candles = [
             {
@@ -311,11 +310,11 @@ async def run_job(asset_key: str, tf_key: str):
                 df, actions, signal_map, cfg["tf_hours"], asset_id=asset_id,
             )
             n_trimmed = len(actions_trimmed)
-            logger.info(f"[{job_key}] Liq+Range+SFP: {int((actions_trimmed != 0).sum())} signals detected")
+            if verbose:
+                logger.info(f"[{job_key}] Liq+Range+SFP: {int((actions_trimmed != 0).sum())} signals detected")
 
             window = WINDOW_BY_TF.get(tf_key, WINDOW)
             scaled = scaler.transform(feat_values)
-            logger.info(f"[{job_key}] Inference: window={window}, {len(scaled)} bars scaled")
 
             n_scored = 0
             n_passed = 0
@@ -388,8 +387,6 @@ async def run_job(asset_key: str, tf_key: str):
 
                 remaining = max(SIGNAL_EXPIRY_BARS - bars_ago, 0)
 
-                # Adaptive rounding for sub-penny coins
-                _nd = max(2, -int(__import__('math').floor(__import__('math').log10(entry + 1e-10))) + 2)
                 signal = {
                     "strategy": "Liq+Range+SFP",
                     "timeframe": tf_key,
@@ -398,16 +395,16 @@ async def run_job(asset_key: str, tf_key: str):
                     "time": bar_time,
                     "symbol": symbol,
                     "direction": direction,
-                    "entry": round(entry, _nd),
-                    "tp1_price": round(tp1_price, _nd),
-                    "tp2_price": round(tp2_price, _nd),
+                    "entry": entry,
+                    "tp1_price": tp1_price,
+                    "tp2_price": tp2_price,
                     "tp1_pct": round(tp1_pct, 2),
                     "tp2_pct": round(tp2_pct, 2),
                     "tp1_conf": round(p_win, 3),
                     "tp2_conf": round(p_win, 3),
-                    "tp_price": round(best_tp_price, _nd),
+                    "tp_price": best_tp_price,
                     "tp_pct": round(best_tp_pct, 2),
-                    "sl_price": round(sl_price, _nd),
+                    "sl_price": sl_price,
                     "sl_pct": round(sl_pct, 2),
                     "ratio": round(ratio, 4),
                     "confidence": round(p_win, 3),
@@ -428,7 +425,7 @@ async def run_job(asset_key: str, tf_key: str):
                 if signal["alerted"]:
                     await send_signal_alert(signal)
 
-            if n_scored > 0:
+            if verbose and n_scored > 0:
                 logger.info(f"[{job_key}] Inference summary: {n_scored} scored, {n_passed} passed P>{MODEL_CONFIDENCE}, {new_signals} new signals")
 
         # ─── Finalize ─────────────────────────────────────────────
@@ -440,14 +437,14 @@ async def run_job(asset_key: str, tf_key: str):
         last_run[job_key] = datetime.now(timezone.utc).isoformat()
 
     except Exception:
-        logger.exception(f"[{job_key}] Job failed")
+        logger.exception(f"[{job_key}] Processing failed")
 
 
 def _expire_active_signals(job_key: str, current_bar_time: int):
     """Decrement bars_remaining for active signals, remove expired from active list.
 
     Only decrements when a new native-TF candle appears (bar_time changes),
-    so running 4h jobs every 15min doesn't expire signals 16× faster.
+    so mid-candle scans don't expire signals prematurely.
     """
     prev = last_bar_time.get(job_key)
     last_bar_time[job_key] = current_bar_time
@@ -466,10 +463,42 @@ def _expire_active_signals(job_key: str, current_bar_time: int):
         logger.info(f"[{job_key}] Expired active signal: {sig['direction']} @ {sig['entry']}")
 
 
+# ─── WebSocket callbacks ────────────────────────────────────────
+
+
+async def on_candle_close(asset_key: str, tf_key: str, df):
+    """Called by BinanceStreamManager when a candle closes — runs full pipeline."""
+    logger.info(f"[{asset_key}_{tf_key}] Candle closed, processing {len(df)} bars")
+    await process_signal(asset_key, tf_key, df, verbose=True)
+
+
+async def mid_candle_scanner():
+    """Periodically scan forming candles for mid-candle SFP detection."""
+    active_assets = {k: v for k, v in ASSETS.items() if v.get("active", True)}
+    while True:
+        await asyncio.sleep(WS_MID_CANDLE_INTERVAL)
+        if stream_mgr is None:
+            continue
+        n_processed = 0
+        for asset_key in active_assets:
+            for tf_key in TIMEFRAMES:
+                cache_key = (asset_key, tf_key)
+                if cache_key not in stream_mgr.current_candle:
+                    continue  # no forming candle yet
+                df = stream_mgr.build_df(asset_key, tf_key)
+                if df is not None:
+                    await process_signal(asset_key, tf_key, df, verbose=False)
+                    n_processed += 1
+        logger.info(f"Mid-candle scan complete: {n_processed} pairs processed")
+
+
+# ─── App lifecycle ───────────────────────────────────────────────
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Load model on startup, start scheduler, run all jobs once."""
-    global model, ensemble_models, scaler
+    """Load model, start WebSocket streams, run initial pipeline."""
+    global model, ensemble_models, scaler, stream_mgr
 
     _load_live_signals()
 
@@ -492,25 +521,38 @@ async def lifespan(app: FastAPI):
         logger.warning("Scaler not found at %s — signals will be unreliable", SCALER_PATH)
 
     active_assets = {k: v for k, v in ASSETS.items() if v.get("active", True)}
-    for asset_key in active_assets:
-        for tf_key, cfg in TIMEFRAMES.items():
-            job_id = f"{asset_key}_{tf_key}"
-            trigger = CronTrigger(**cfg["cron"], timezone=timezone.utc)
-            scheduler.add_job(run_job, trigger, args=[asset_key, tf_key], id=job_id, name=f"sfp_{job_id}",
-                              misfire_grace_time=300, jitter=30)
-            logger.info(f"Scheduled {job_id} job: {cfg['cron']}")
 
-    scheduler.start()
-    logger.info("Scheduler started — %d jobs (%d assets × %d TFs)", len(active_assets) * len(TIMEFRAMES), len(active_assets), len(TIMEFRAMES))
+    # Start WebSocket stream manager (fetches initial history + connects WS)
+    stream_mgr = BinanceStreamManager(active_assets, TIMEFRAMES)
+    stream_mgr.on_candle_close = on_candle_close
+    await stream_mgr.start()
+    logger.info(
+        "Stream manager started — %d pairs (%d assets x %d TFs)",
+        len(active_assets) * len(TIMEFRAMES),
+        len(active_assets),
+        len(TIMEFRAMES),
+    )
 
+    # Run initial pipeline for all assets/TFs (like the old startup run_job calls)
     for asset_key in active_assets:
         for tf_key in TIMEFRAMES:
-            await run_job(asset_key, tf_key)
+            df = stream_mgr.build_df(asset_key, tf_key)
+            if df is not None:
+                await process_signal(asset_key, tf_key, df)
+
+    # Start mid-candle scanner background task
+    scanner_task = asyncio.create_task(mid_candle_scanner())
+    logger.info("Mid-candle scanner started (every %ds)", WS_MID_CANDLE_INTERVAL)
 
     yield
 
-    scheduler.shutdown()
-    logger.info("Scheduler shut down")
+    scanner_task.cancel()
+    try:
+        await scanner_task
+    except asyncio.CancelledError:
+        pass
+    await stream_mgr.stop()
+    logger.info("Stream manager stopped")
 
 
 app = FastAPI(title="Edge Signal Server", lifespan=lifespan)
@@ -573,10 +615,13 @@ async def get_candles(asset: str, tf: str):
 
 @app.get("/health")
 async def health():
-    jobs = []
-    for job in scheduler.get_jobs():
-        next_run = job.next_run_time.isoformat() if job.next_run_time else None
-        jobs.append({"id": job.id, "name": job.name, "next_run": next_run})
+    stream_info = {}
+    if stream_mgr:
+        stream_info = {
+            "cached_pairs": len(stream_mgr.cache),
+            "forming_candles": len(stream_mgr.current_candle),
+            "mid_candle_interval": WS_MID_CANDLE_INTERVAL,
+        }
 
     resolved = [s for s in live_signals if s["status"] not in ("open", "partial")]
     wins = sum(1 for s in resolved if s["status"] in ("win", "partial_win"))
@@ -584,7 +629,7 @@ async def health():
     return {
         "status": "ok",
         "model_loaded": model is not None,
-        "scheduled_jobs": jobs,
+        "stream": stream_info,
         "active_signals": len(active_signals),
         "live_stats": {
             "total": len(live_signals),
@@ -718,7 +763,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       <div id="live-signals"><div class="empty">Loading...</div></div>
     </div>
     <div class="section">
-      <h2>Scheduled Jobs</h2>
+      <h2>Stream Status</h2>
       <div id="jobs"><div class="empty">Loading...</div></div>
     </div>
   </div>
@@ -917,12 +962,13 @@ async function refreshData() {
       ? '<div class="empty">No live signals yet</div>'
       : reversed.map(s => renderSignalCard(s, true)).join('');
 
-    // Jobs
+    // Stream status
     const jEl = document.getElementById('jobs');
-    jEl.innerHTML = hpData.scheduled_jobs.map(j => {
-      const next = j.next_run ? new Date(j.next_run).toUTCString().slice(5, -4) : 'N/A';
-      return '<div class="job-row"><span>' + j.id + '</span><span style="color:#8b949e">next: ' + next + '</span></div>';
-    }).join('');
+    const st = hpData.stream || {};
+    jEl.innerHTML =
+      '<div class="job-row"><span>Cached pairs</span><span style="color:#8b949e">' + (st.cached_pairs || 0) + '</span></div>' +
+      '<div class="job-row"><span>Forming candles</span><span style="color:#8b949e">' + (st.forming_candles || 0) + '</span></div>' +
+      '<div class="job-row"><span>Scan interval</span><span style="color:#8b949e">' + (st.mid_candle_interval || 60) + 's</span></div>';
 
     document.getElementById('status').innerHTML =
       '<span class="dot"></span>' + stats.total + ' live signal(s) · ' + new Date().toLocaleTimeString();

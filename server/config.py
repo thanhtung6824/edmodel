@@ -55,6 +55,12 @@ ENSEMBLE_MODEL_PATTERN = "best_model_liq_range_sfp_*.pth"
 
 LIVE_SIGNALS_PATH = "signals_live.json"
 
+# WebSocket streaming
+WS_SPOT_URL = "wss://stream.binance.com:9443/stream"
+WS_FUTURES_URL = "wss://fstream.binance.com/stream"
+WS_RECONNECT_DELAY = 5  # initial reconnect delay (seconds), doubles up to 60
+WS_MID_CANDLE_INTERVAL = 60  # seconds between mid-candle scans
+
 # Past signal files (from backtest validation)
 HISTORY_FILES = {
     "15m": "signals_15min.json",
@@ -62,29 +68,11 @@ HISTORY_FILES = {
     "4h": "signals_4h.json",
 }
 
-# Timeframe configs: (binance interval, tf_hours, cron kwargs for APScheduler)
+# Timeframe configs
 TIMEFRAMES = {
-    "15m": {
-        "interval": "15m",
-        "tf_hours": 0.25,
-        "tf_key": "15m",
-        # Run every 5min
-        "cron": {"minute": "1,6,11,16,21,26,31,36,41,46,51,56"},
-    },
-    "1h": {
-        "interval": "1h",
-        "tf_hours": 1.0,
-        "tf_key": "1h",
-        # Run every 5min to catch partial-candle SFPs early
-        "cron": {"minute": "1,6,11,16,21,26,31,36,41,46,51,56"},
-    },
-    "4h": {
-        "interval": "4h",
-        "tf_hours": 4.0,
-        "tf_key": "4h",
-        # Run every 5min to catch partial-candle SFPs early
-        "cron": {"minute": "1,6,11,16,21,26,31,36,41,46,51,56"},
-    },
+    "15m": {"interval": "15m", "tf_hours": 0.25, "tf_key": "15m"},
+    "1h":  {"interval": "1h",  "tf_hours": 1.0,  "tf_key": "1h"},
+    "4h":  {"interval": "4h",  "tf_hours": 4.0,  "tf_key": "4h"},
 }
 
 # Telegram bot — set via environment variables
