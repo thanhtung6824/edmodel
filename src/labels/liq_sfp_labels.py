@@ -63,7 +63,7 @@ class LiqRangeSFPSignal:
 # Main label generator
 # ---------------------------------------------------------------------------
 
-def generate_labels(highs, lows, closes, opens, volumes=None, tf_key="4h"):
+def generate_labels(highs, lows, closes, opens, volumes=None, tf_key="4h", detection_only=False):
     """Top-level: SFP at range boundary + soft liq features.
 
     Signal filter: SFP + range boundary (same as range_sfp_labels).
@@ -471,6 +471,12 @@ def generate_labels(highs, lows, closes, opens, volumes=None, tf_key="4h"):
     n_short = int(np.sum(actions == 2))
     print(f"    Range approach: {n_approach} signals")
     print(f"    Total: {n_boundary} signals ({n_long} long, {n_short} short)")
+
+    if detection_only:
+        # Server mode: skip label computation (it zeros out recent signals)
+        n_total = int(np.sum(actions != 0))
+        print(f"  [LiqRangeSFP/{tf_key}] {n_total} signals (detection only)")
+        return actions, None, None, None, None, swept_levels, signal_map, None
 
     # --- MFE/SL/TTP/MAE labels ---
     quality, mfe_labels, sl_labels, ttp_labels, mae_labels = compute_range_tp_sl_labels(

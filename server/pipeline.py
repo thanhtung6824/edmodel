@@ -106,6 +106,7 @@ def run_liq_range_sfp_detection(df: pd.DataFrame, tf_key: str):
         highs, lows, closes, opens,
         volumes=volumes,
         tf_key=tf_key,
+        detection_only=True,
     )
 
     return actions, swept_levels, signal_map
